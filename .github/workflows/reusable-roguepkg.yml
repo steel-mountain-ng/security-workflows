@@ -1,0 +1,58 @@
+name: Reusable RoguePkg Supply Chain
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Path containing package.json / lockfiles
+        type: string
+        required: false
+        default: '.'
+      malware-only:
+        description: Only fail/report malware (recommended for CI)
+        type: boolean
+        required: false
+        default: true
+      fail-on-malware:
+        description: Fail the workflow when malware is detected
+        type: boolean
+        required: false
+        default: true
+      fail-on-vulnerability:
+        description: Fail on non-malware vulnerabilities (only when malware-only is false)
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  roguepkg:
+    name: RoguePkg Supply Chain
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Scan for compromised packages
+        id: scan
+        uses: radioactivetobi/roguepkg@v1
+        with:
+          scan-path: ${{ inputs.working-directory }}
+          malware-only: ${{ inputs.malware-only }}
+          fail-on-malware: ${{ inputs.fail-on-malware }}
+          fail-on-vulnerability: ${{ inputs.fail-on-vulnerability }}
+
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          echo "### RoguePkg results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Malware found: ${{ steps.scan.outputs.malware-found }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Vulnerabilities found: ${{ steps.scan.outputs.vulnerabilities-found }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Total scanned: ${{ steps.scan.outputs.total-scanned }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Status: ${{ steps.scan.outputs.scan-status }}" >> "$GITHUB_STEP_SUMMARY"

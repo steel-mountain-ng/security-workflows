@@ -1,0 +1,206 @@
+name: Reusable Security CI
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Directory to scan
+        type: string
+        required: false
+        default: '.'
+      fail-severity:
+        description: Minimum severity that fails Trivy jobs (CRITICAL, HIGH, MEDIUM, LOW)
+        type: string
+        required: false
+        default: 'HIGH'
+      upload-sarif:
+        description: Upload SARIF to GitHub Code Scanning
+        type: boolean
+        required: false
+        default: true
+      semgrep-rules:
+        description: Semgrep rule packs / configs
+        type: string
+        required: false
+        default: 'p/default p/security-audit p/nodejs'
+      dockerfile:
+        description: Path to Dockerfile
+        type: string
+        required: false
+        default: 'Dockerfile'
+      context:
+        description: Docker build context
+        type: string
+        required: false
+        default: '.'
+      image-name:
+        description: Local image name/tag for image scan
+        type: string
+        required: false
+        default: 'local/app:ci'
+      run-semgrep:
+        type: boolean
+        required: false
+        default: true
+      run-trivy-sca:
+        type: boolean
+        required: false
+        default: true
+      run-trivy-iac:
+        type: boolean
+        required: false
+        default: true
+      run-trivy-secrets:
+        type: boolean
+        required: false
+        default: true
+      run-trivy-image:
+        type: boolean
+        required: false
+        default: true
+      run-roguepkg:
+        type: boolean
+        required: false
+        default: true
+      malware-only:
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      SEMGREP_APP_TOKEN:
+        description: Optional Semgrep Cloud token
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    if: ${{ inputs.run-semgrep }}
+    uses: ./.github/workflows/reusable-semgrep.yml
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      semgrep-rules: ${{ inputs.semgrep-rules }}
+      upload-sarif: ${{ inputs.upload-sarif }}
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  trivy-sca:
+    name: Trivy SCA
+    if: ${{ inputs.run-trivy-sca }}
+    uses: ./.github/workflows/reusable-trivy-sca.yml
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      fail-severity: ${{ inputs.fail-severity }}
+      upload-sarif: ${{ inputs.upload-sarif }}
+
+  trivy-iac:
+    name: Trivy IaC
+    if: ${{ inputs.run-trivy-iac }}
+    uses: ./.github/workflows/reusable-trivy-iac.yml
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      fail-severity: ${{ inputs.fail-severity }}
+      upload-sarif: ${{ inputs.upload-sarif }}
+
+  trivy-secrets:
+    name: Trivy Secrets
+    if: ${{ inputs.run-trivy-secrets }}
+    uses: ./.github/workflows/reusable-trivy-secrets.yml
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      upload-sarif: ${{ inputs.upload-sarif }}
+
+  trivy-image:
+    name: Trivy Image
+    if: ${{ inputs.run-trivy-image }}
+    uses: ./.github/workflows/reusable-trivy-image.yml
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      dockerfile: ${{ inputs.dockerfile }}
+      context: ${{ inputs.context }}
+      image-name: ${{ inputs.image-name }}
+      fail-severity: ${{ inputs.fail-severity }}
+      upload-sarif: ${{ inputs.upload-sarif }}
+
+  roguepkg:
+    name: RoguePkg Supply Chain
+    if: ${{ inputs.run-roguepkg }}
+    uses: ./.github/workflows/reusable-roguepkg.yml
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      malware-only: ${{ inputs.malware-only }}
+      fail-on-malware: true
+      fail-on-vulnerability: false
+
+  security-gate:
+    name: Security Gate
+    needs:
+      - semgrep
+      - trivy-sca
+      - trivy-iac
+      - trivy-secrets
+      - trivy-image
+      - roguepkg
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce no CRITICAL/HIGH, malware, or secrets
+        shell: bash
+        env:
+          SEMGREP: ${{ needs.semgrep.result }}
+          TRIVY_SCA: ${{ needs.trivy-sca.result }}
+          TRIVY_IAC: ${{ needs.trivy-iac.result }}
+          TRIVY_SECRETS: ${{ needs.trivy-secrets.result }}
+          TRIVY_IMAGE: ${{ needs.trivy-image.result }}
+          ROGUEPKG: ${{ needs.roguepkg.result }}
+          RUN_SEMGREP: ${{ inputs.run-semgrep }}
+          RUN_TRIVY_SCA: ${{ inputs.run-trivy-sca }}
+          RUN_TRIVY_IAC: ${{ inputs.run-trivy-iac }}
+          RUN_TRIVY_SECRETS: ${{ inputs.run-trivy-secrets }}
+          RUN_TRIVY_IMAGE: ${{ inputs.run-trivy-image }}
+          RUN_ROGUEPKG: ${{ inputs.run-roguepkg }}
+        run: |
+          set -euo pipefail
+          echo "### Security Gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Job | Enabled | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Semgrep | $RUN_SEMGREP | $SEMGREP |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trivy SCA | $RUN_TRIVY_SCA | $TRIVY_SCA |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trivy IaC | $RUN_TRIVY_IAC | $TRIVY_IAC |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trivy Secrets | $RUN_TRIVY_SECRETS | $TRIVY_SECRETS |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trivy Image | $RUN_TRIVY_IMAGE | $TRIVY_IMAGE |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| RoguePkg | $RUN_ROGUEPKG | $ROGUEPKG |" >> "$GITHUB_STEP_SUMMARY"
+
+          failed=0
+          check() {
+            local enabled="$1"
+            local result="$2"
+            local label="$3"
+            if [ "$enabled" = "true" ]; then
+              if [ "$result" != "success" ]; then
+                echo "::error::Quality gate failed: $label result=$result"
+                failed=1
+              fi
+            fi
+          }
+
+          check "$RUN_SEMGREP" "$SEMGREP" "Semgrep SAST"
+          check "$RUN_TRIVY_SCA" "$TRIVY_SCA" "Trivy SCA"
+          check "$RUN_TRIVY_IAC" "$TRIVY_IAC" "Trivy IaC"
+          check "$RUN_TRIVY_SECRETS" "$TRIVY_SECRETS" "Trivy Secrets"
+          check "$RUN_TRIVY_IMAGE" "$TRIVY_IMAGE" "Trivy Image"
+          check "$RUN_ROGUEPKG" "$ROGUEPKG" "RoguePkg"
+
+          if [ "$failed" -ne 0 ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Gate result:** FAILED — CRITICAL/HIGH findings, secrets, or malware blocked promotion." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Gate result:** PASSED" >> "$GITHUB_STEP_SUMMARY"

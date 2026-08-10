@@ -1,0 +1,56 @@
+name: Reusable Semgrep SAST
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Directory to scan
+        type: string
+        required: false
+        default: '.'
+      semgrep-rules:
+        description: Semgrep rule packs / configs
+        type: string
+        required: false
+        default: 'p/default p/security-audit p/nodejs'
+      upload-sarif:
+        description: Upload SARIF to GitHub Code Scanning
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      SEMGREP_APP_TOKEN:
+        description: Optional Semgrep Cloud token (public rules work without it)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    permissions:
+      contents: read
+      security-events: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: semgrep ci --sarif --output=semgrep-results.sarif
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+          SEMGREP_RULES: ${{ inputs.semgrep-rules }}
+
+      - name: Upload SARIF
+        if: ${{ always() && inputs.upload-sarif }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ inputs.working-directory }}/semgrep-results.sarif
+          category: semgrep-sast

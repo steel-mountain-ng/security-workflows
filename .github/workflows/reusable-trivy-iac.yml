@@ -1,0 +1,64 @@
+name: Reusable Trivy IaC
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Directory to scan (Dockerfile, K8s, Terraform, etc.)
+        type: string
+        required: false
+        default: '.'
+      fail-severity:
+        description: Minimum severity that fails the job (CRITICAL, HIGH, MEDIUM, LOW)
+        type: string
+        required: false
+        default: 'HIGH'
+      upload-sarif:
+        description: Upload SARIF to GitHub Code Scanning
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  trivy-iac:
+    name: Trivy IaC
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve severity list
+        id: severity
+        shell: bash
+        run: |
+          case "${{ inputs.fail-severity }}" in
+            CRITICAL) LIST="CRITICAL" ;;
+            HIGH) LIST="CRITICAL,HIGH" ;;
+            MEDIUM) LIST="CRITICAL,HIGH,MEDIUM" ;;
+            LOW) LIST="CRITICAL,HIGH,MEDIUM,LOW" ;;
+            *) echo "Unsupported fail-severity: ${{ inputs.fail-severity }}"; exit 1 ;;
+          esac
+          echo "list=$LIST" >> "$GITHUB_OUTPUT"
+
+      - name: Run Trivy config / IaC scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: ${{ inputs.working-directory }}
+          severity: ${{ steps.severity.outputs.list }}
+          exit-code: '1'
+          format: sarif
+          output: trivy-iac-results.sarif
+
+      - name: Upload SARIF
+        if: ${{ always() && inputs.upload-sarif }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-iac-results.sarif
+          category: trivy-iac

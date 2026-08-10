@@ -1,0 +1,91 @@
+name: Reusable Trivy Image
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Build context root
+        type: string
+        required: false
+        default: '.'
+      dockerfile:
+        description: Path to Dockerfile (relative to repo root)
+        type: string
+        required: false
+        default: 'Dockerfile'
+      context:
+        description: Docker build context
+        type: string
+        required: false
+        default: '.'
+      image-name:
+        description: Local image name/tag used for the scan
+        type: string
+        required: false
+        default: 'local/app:ci'
+      fail-severity:
+        description: Minimum severity that fails the job (CRITICAL, HIGH, MEDIUM, LOW)
+        type: string
+        required: false
+        default: 'HIGH'
+      upload-sarif:
+        description: Upload SARIF to GitHub Code Scanning
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  trivy-image:
+    name: Trivy Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          load: true
+          tags: ${{ inputs.image-name }}
+          push: false
+
+      - name: Resolve severity list
+        id: severity
+        shell: bash
+        run: |
+          case "${{ inputs.fail-severity }}" in
+            CRITICAL) LIST="CRITICAL" ;;
+            HIGH) LIST="CRITICAL,HIGH" ;;
+            MEDIUM) LIST="CRITICAL,HIGH,MEDIUM" ;;
+            LOW) LIST="CRITICAL,HIGH,MEDIUM,LOW" ;;
+            *) echo "Unsupported fail-severity: ${{ inputs.fail-severity }}"; exit 1 ;;
+          esac
+          echo "list=$LIST" >> "$GITHUB_OUTPUT"
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image-name }}
+          severity: ${{ steps.severity.outputs.list }}
+          exit-code: '1'
+          format: sarif
+          output: trivy-image-results.sarif
+
+      - name: Upload SARIF
+        if: ${{ always() && inputs.upload-sarif }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image-results.sarif
+          category: trivy-image
