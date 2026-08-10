@@ -71,8 +71,12 @@ on:
         description: Optional Semgrep Cloud token
         required: false
 
+# Nested reusable workflows inherit the *caller* workflow token scope.
+# security-events must be granted here or SARIF upload jobs are limited to none.
 permissions:
   contents: read
+  security-events: write
+  pull-requests: write
 
 jobs:
   # Nested reusable workflows cannot use relative ./ paths when the top-level
