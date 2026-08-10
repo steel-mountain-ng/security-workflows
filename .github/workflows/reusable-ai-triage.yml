@@ -1,0 +1,84 @@
+name: Reusable AI Triage
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: OpenRouter model id
+        type: string
+        required: false
+        default: 'openai/gpt-4o-mini'
+      max-findings:
+        description: Max findings to send to the model
+        type: string
+        required: false
+        default: '25'
+      confidence-threshold:
+        description: Minimum confidence for auto-fix eligibility
+        type: string
+        required: false
+        default: '0.7'
+      open-fix-prs:
+        description: Open draft fix PRs for allowlisted remediations
+        type: boolean
+        required: false
+        default: false
+      gate-status:
+        description: Security Gate job result
+        type: string
+        required: false
+        default: 'unknown'
+    secrets:
+      OPENROUTER_API_KEY:
+        description: OpenRouter API key
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  ai-triage:
+    name: AI Triage
+    runs-on: ubuntu-latest
+    # Advisory only — never fails the workflow / never weakens Security Gate
+    continue-on-error: true
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download scanner findings
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: security-findings-*
+          path: ai-findings
+          merge-multiple: true
+
+      - name: List findings payload
+        shell: bash
+        run: |
+          echo "### AI findings payload" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d ai-findings ]; then
+            find ai-findings -type f | sort | tee -a "$GITHUB_STEP_SUMMARY" || true
+          else
+            echo "No ai-findings directory" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Run OpenRouter triage
+        uses: steel-mountain-ng/security-workflows/actions/ai-triage@v1
+        with:
+          findings-dir: ai-findings
+          repo-root: .
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          model: ${{ inputs.model }}
+          max-findings: ${{ inputs.max-findings }}
+          confidence-threshold: ${{ inputs.confidence-threshold }}
+          open-fix-prs: ${{ inputs.open-fix-prs }}
+          github-token: ${{ github.token }}
+          gate-status: ${{ inputs.gate-status }}

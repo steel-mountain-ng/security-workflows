@@ -55,6 +55,39 @@ jobs:
           upload: ${{ inputs.upload-sarif }}
           output: codeql-sarif
 
+      - name: Stage CodeQL findings for AI triage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p findings
+          shopt -s nullglob
+          files=(codeql-sarif/*.sarif)
+          if [ ${#files[@]} -gt 0 ]; then
+            cp "${files[@]}" findings/
+            # Flatten into one SARIF file for consumers when multiple exist
+            if [ ${#files[@]} -eq 1 ]; then
+              cp "${files[0]}" findings/codeql.sarif
+            else
+              jq -s '{
+                "$schema": (.[0]["$schema"] // "https://json.schemastore.org/sarif-2.1.0.json"),
+                version: "2.1.0",
+                runs: [.[].runs[]]
+              }' "${files[@]}" > findings/codeql.sarif
+            fi
+          else
+            echo '{"version":"2.1.0","runs":[]}' > findings/codeql.sarif
+          fi
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-findings-codeql
+          path: findings/
+          if-no-files-found: ignore
+          retention-days: 5
+
       - name: Fail on error/warning findings
         if: ${{ always() && inputs.fail-on-findings }}
         shell: bash

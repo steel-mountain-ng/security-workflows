@@ -46,13 +46,41 @@ jobs:
           fail-on-malware: ${{ inputs.fail-on-malware }}
           fail-on-vulnerability: ${{ inputs.fail-on-vulnerability }}
 
-      - name: Summarize
+      - name: Summarize and stage JSON for AI triage
         if: always()
         shell: bash
+        env:
+          MALWARE: ${{ steps.scan.outputs.malware-found }}
+          VULNS: ${{ steps.scan.outputs.vulnerabilities-found }}
+          TOTAL: ${{ steps.scan.outputs.total-scanned }}
+          STATUS: ${{ steps.scan.outputs.scan-status }}
+          OUTCOME: ${{ steps.scan.outcome }}
         run: |
+          mkdir -p findings
+          python3 - <<'PY'
+          import json, os
+          payload = {
+            "tool": "roguepkg",
+            "malware_found": int(os.environ.get("MALWARE") or 0),
+            "vulnerabilities_found": int(os.environ.get("VULNS") or 0),
+            "total_scanned": int(os.environ.get("TOTAL") or 0),
+            "scan_status": os.environ.get("STATUS") or "unknown",
+            "gate_failed": os.environ.get("OUTCOME") == "failure",
+          }
+          open("findings/roguepkg.json", "w", encoding="utf-8").write(json.dumps(payload, indent=2))
+          PY
           echo "### RoguePkg results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Malware found: ${{ steps.scan.outputs.malware-found }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Vulnerabilities found: ${{ steps.scan.outputs.vulnerabilities-found }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Total scanned: ${{ steps.scan.outputs.total-scanned }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Status: ${{ steps.scan.outputs.scan-status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Malware found: ${MALWARE}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Vulnerabilities found: ${VULNS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Total scanned: ${TOTAL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Status: ${STATUS}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-findings-roguepkg
+          path: findings/
+          if-no-files-found: ignore
+          retention-days: 5

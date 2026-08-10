@@ -71,11 +71,36 @@ on:
         type: boolean
         required: false
         default: true
+      run-ai-triage:
+        description: Run advisory AI triage on pull_request (does not affect Security Gate)
+        type: boolean
+        required: false
+        default: true
+      ai-model:
+        description: OpenRouter model id
+        type: string
+        required: false
+        default: 'openai/gpt-4o-mini'
+      ai-max-findings:
+        description: Max findings sent to the model
+        type: string
+        required: false
+        default: '25'
+      ai-open-fix-prs:
+        description: Open draft fix PRs for allowlisted remediations
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      OPENROUTER_API_KEY:
+        description: OpenRouter API key for AI triage
+        required: false
 
 # Nested reusable workflows inherit the *caller* workflow token scope.
 # security-events must be granted here or SARIF upload jobs are limited to none.
 permissions:
-  contents: read
+  # contents:write needed when ai-open-fix-prs pushes draft fix branches
+  contents: write
   actions: read
   security-events: write
   pull-requests: write
@@ -211,3 +236,24 @@ jobs:
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Gate result:** PASSED" >> "$GITHUB_STEP_SUMMARY"
+
+  # Advisory only. Never included in Security Gate. Does not change pass/fail.
+  ai-triage:
+    name: AI Triage
+    needs:
+      - codeql
+      - trivy-sca
+      - trivy-iac
+      - trivy-secrets
+      - trivy-image
+      - roguepkg
+      - security-gate
+    if: ${{ always() && inputs.run-ai-triage && github.event_name == 'pull_request' }}
+    uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-ai-triage.yml@v1
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    with:
+      model: ${{ inputs.ai-model }}
+      max-findings: ${{ inputs.ai-max-findings }}
+      open-fix-prs: ${{ inputs.ai-open-fix-prs }}
+      gate-status: ${{ needs.security-gate.result }}

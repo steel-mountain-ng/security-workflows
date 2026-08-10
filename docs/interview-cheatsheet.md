@@ -39,8 +39,9 @@ jobs:
 1. Each scanner job fails on its own criteria (e.g. Trivy `exit-code: 1` for CRITICAL/HIGH)
 2. Orchestrator `Security Gate` job runs `if: always()`, inspects `needs.*.result`, and fails if any enabled scanner is not `success`
 3. Branch protection requires **Security Gate** so merges/deploys cannot skip a red check
+4. **AI triage** runs after the gate on PRs only — advisory comments / draft fixes; never in the gate `needs` list
 
-Interview talking point: *“We don’t block on every Medium forever — we set a severity bar (CRITICAL/HIGH), always block secrets/malware, and report the rest via SARIF.”*
+Interview talking point: *“Policy is code (gates); judgment is assisted (AI); humans own residual risk.”*
 
 ## SARIF → Security tab
 

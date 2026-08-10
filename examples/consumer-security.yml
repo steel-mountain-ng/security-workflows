@@ -10,7 +10,7 @@ on:
     - cron: '30 0 * * 1'
 
 permissions:
-  contents: read
+  contents: write
   actions: read
   security-events: write
   pull-requests: write
@@ -19,6 +19,7 @@ jobs:
   security:
     name: Security CI
     uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-security-ci.yml@v1
+    secrets: inherit
     with:
       fail-severity: HIGH
       upload-sarif: true
@@ -26,10 +27,8 @@ jobs:
       dockerfile: Dockerfile
       context: .
       image-name: local/${{ github.event.repository.name }}:ci
-      # Optional toggles:
-      # run-codeql: true
-      # run-trivy-sca: true
-      # run-trivy-iac: true
-      # run-trivy-secrets: true
-      # run-trivy-image: true
-      # run-roguepkg: true
+      run-ai-triage: true
+      ai-model: openai/gpt-4o-mini
+      ai-max-findings: '25'
+      # Draft fix PRs for allowlisted items only (Dockerfile USER, dep bumps)
+      ai-open-fix-prs: false
