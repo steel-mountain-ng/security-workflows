@@ -70,6 +70,9 @@ Needs `permissions: security-events: write`. Categories keep Semgrep vs Trivy re
 - `@v1` tag → stable for consumers; bump intentionally
 - `@main` → always latest (good for demos, riskier for prod)
 - Pin third-party actions (`aquasecurity/trivy-action@0.28.0`, `radioactivetobi/roguepkg@v1`)
+- Nested reusable workflows called from another repo must use
+  `owner/repo/.github/workflows/file.yml@ref` — relative `./` paths look in the
+  top-level caller repo and fail with “workflow was not found”
 
 ## Branch protection checklist
 

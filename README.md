@@ -86,6 +86,10 @@ uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-security-c
 
 Use `@main` only when you intentionally want floating updates.
 
+**Note:** The orchestrator calls sibling reusable workflows with full
+`owner/repo/path@v1` refs (not `./`). Relative nested `uses:` paths resolve
+against the *caller* repo and break cross-repo reuse.
+
 ## Demo consumer
 
 [`steel-mountain-ng/vulnerable-app`](https://github.com/steel-mountain-ng/vulnerable-app) calls these workflows. It is intentionally insecure, so gates are expected to fail — useful for interview walkthroughs.

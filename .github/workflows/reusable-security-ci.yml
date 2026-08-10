@@ -75,10 +75,12 @@ permissions:
   contents: read
 
 jobs:
+  # Nested reusable workflows cannot use relative ./ paths when the top-level
+  # caller is another repository. Call sibling workflows with full refs instead.
   semgrep:
     name: Semgrep SAST
     if: ${{ inputs.run-semgrep }}
-    uses: ./.github/workflows/reusable-semgrep.yml
+    uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-semgrep.yml@v1
     with:
       working-directory: ${{ inputs.working-directory }}
       semgrep-rules: ${{ inputs.semgrep-rules }}
@@ -89,7 +91,7 @@ jobs:
   trivy-sca:
     name: Trivy SCA
     if: ${{ inputs.run-trivy-sca }}
-    uses: ./.github/workflows/reusable-trivy-sca.yml
+    uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-trivy-sca.yml@v1
     with:
       working-directory: ${{ inputs.working-directory }}
       fail-severity: ${{ inputs.fail-severity }}
@@ -98,7 +100,7 @@ jobs:
   trivy-iac:
     name: Trivy IaC
     if: ${{ inputs.run-trivy-iac }}
-    uses: ./.github/workflows/reusable-trivy-iac.yml
+    uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-trivy-iac.yml@v1
     with:
       working-directory: ${{ inputs.working-directory }}
       fail-severity: ${{ inputs.fail-severity }}
@@ -107,7 +109,7 @@ jobs:
   trivy-secrets:
     name: Trivy Secrets
     if: ${{ inputs.run-trivy-secrets }}
-    uses: ./.github/workflows/reusable-trivy-secrets.yml
+    uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-trivy-secrets.yml@v1
     with:
       working-directory: ${{ inputs.working-directory }}
       upload-sarif: ${{ inputs.upload-sarif }}
@@ -115,7 +117,7 @@ jobs:
   trivy-image:
     name: Trivy Image
     if: ${{ inputs.run-trivy-image }}
-    uses: ./.github/workflows/reusable-trivy-image.yml
+    uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-trivy-image.yml@v1
     with:
       working-directory: ${{ inputs.working-directory }}
       dockerfile: ${{ inputs.dockerfile }}
@@ -127,7 +129,7 @@ jobs:
   roguepkg:
     name: RoguePkg Supply Chain
     if: ${{ inputs.run-roguepkg }}
-    uses: ./.github/workflows/reusable-roguepkg.yml
+    uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-roguepkg.yml@v1
     with:
       working-directory: ${{ inputs.working-directory }}
       malware-only: ${{ inputs.malware-only }}
