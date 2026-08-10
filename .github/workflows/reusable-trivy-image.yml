@@ -95,15 +95,27 @@ jobs:
           esac
           echo "list=$LIST" >> "$GITHUB_OUTPUT"
 
-      - name: Run Trivy image scan
+      - name: Run Trivy image scan (table)
+        id: scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: ${{ steps.target.outputs.ref }}
           severity: ${{ steps.severity.outputs.list }}
           exit-code: '1'
+          format: table
+
+      - name: Generate SARIF report
+        if: ${{ always() && inputs.upload-sarif }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.target.outputs.ref }}
+          severity: ${{ steps.severity.outputs.list }}
+          exit-code: '0'
           format: sarif
           output: trivy-image-results.sarif
+          limit-severities-for-sarif: true
 
       - name: Upload SARIF
         if: ${{ always() && inputs.upload-sarif }}
@@ -112,3 +124,19 @@ jobs:
         with:
           sarif_file: trivy-image-results.sarif
           category: trivy-image
+
+      - name: Quality gate summary
+        if: always()
+        shell: bash
+        run: |
+          echo "### Trivy Image" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`${{ steps.target.outputs.ref }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Fail severity: \`${{ inputs.fail-severity }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.scan.outcome }}" = "failure" ]; then
+            echo "- **Gate:** FAILED — CRITICAL/HIGH image vulnerabilities detected (see job log table above)." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.scan.outcome }}" = "success" ]; then
+            echo "- **Gate:** PASSED — no CRITICAL/HIGH image vulnerabilities." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Gate:** ${{ steps.scan.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          fi

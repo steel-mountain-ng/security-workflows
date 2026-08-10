@@ -46,15 +46,27 @@ jobs:
           esac
           echo "list=$LIST" >> "$GITHUB_OUTPUT"
 
-      - name: Run Trivy config / IaC scan
+      - name: Run Trivy IaC scan (table)
+        id: scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: ${{ inputs.working-directory }}
           severity: ${{ steps.severity.outputs.list }}
           exit-code: '1'
+          format: table
+
+      - name: Generate SARIF report
+        if: ${{ always() && inputs.upload-sarif }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: ${{ inputs.working-directory }}
+          severity: ${{ steps.severity.outputs.list }}
+          exit-code: '0'
           format: sarif
           output: trivy-iac-results.sarif
+          limit-severities-for-sarif: true
 
       - name: Upload SARIF
         if: ${{ always() && inputs.upload-sarif }}
@@ -63,3 +75,18 @@ jobs:
         with:
           sarif_file: trivy-iac-results.sarif
           category: trivy-iac
+
+      - name: Quality gate summary
+        if: always()
+        shell: bash
+        run: |
+          echo "### Trivy IaC" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Fail severity: \`${{ inputs.fail-severity }}\` (scans \`${{ steps.severity.outputs.list }}\`)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.scan.outcome }}" = "failure" ]; then
+            echo "- **Gate:** FAILED — CRITICAL/HIGH misconfigurations detected (see job log table above)." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.scan.outcome }}" = "success" ]; then
+            echo "- **Gate:** PASSED — no CRITICAL/HIGH misconfigurations." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Gate:** ${{ steps.scan.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          fi

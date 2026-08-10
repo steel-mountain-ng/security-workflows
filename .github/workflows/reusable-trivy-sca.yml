@@ -46,16 +46,29 @@ jobs:
           esac
           echo "list=$LIST" >> "$GITHUB_OUTPUT"
 
-      - name: Run Trivy filesystem SCA
+      - name: Run Trivy filesystem SCA (table)
+        id: scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: ${{ inputs.working-directory }}
+          scanners: vuln
           severity: ${{ steps.severity.outputs.list }}
           exit-code: '1'
+          format: table
+
+      - name: Generate SARIF report
+        if: ${{ always() && inputs.upload-sarif }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.working-directory }}
+          scanners: vuln
+          severity: ${{ steps.severity.outputs.list }}
+          exit-code: '0'
           format: sarif
           output: trivy-sca-results.sarif
-          ignore-unfixed: false
+          limit-severities-for-sarif: true
 
       - name: Upload SARIF
         if: ${{ always() && inputs.upload-sarif }}
@@ -64,3 +77,18 @@ jobs:
         with:
           sarif_file: trivy-sca-results.sarif
           category: trivy-sca
+
+      - name: Quality gate summary
+        if: always()
+        shell: bash
+        run: |
+          echo "### Trivy SCA" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Fail severity: \`${{ inputs.fail-severity }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.scan.outcome }}" = "failure" ]; then
+            echo "- **Gate:** FAILED — CRITICAL/HIGH dependency vulnerabilities detected (see job log table above)." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.scan.outcome }}" = "success" ]; then
+            echo "- **Gate:** PASSED — no CRITICAL/HIGH dependency vulnerabilities." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Gate:** ${{ steps.scan.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
