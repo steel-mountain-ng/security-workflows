@@ -47,7 +47,7 @@ jobs:
           echo "list=$LIST" >> "$GITHUB_OUTPUT"
 
       - name: Run Trivy filesystem SCA
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: ${{ inputs.working-directory }}
@@ -59,6 +59,7 @@ jobs:
 
       - name: Upload SARIF
         if: ${{ always() && inputs.upload-sarif }}
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-sca-results.sarif
