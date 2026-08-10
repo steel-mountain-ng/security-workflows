@@ -488,7 +488,6 @@ def post_pr_comment(body: str) -> None:
             env={**os.environ, "GH_TOKEN": token},
         )
         if existing.returncode == 0 and marker in (existing.stdout or ""):
-            # Find comment id
             listing = subprocess.run(
                 ["gh", "api", f"repos/{repo}/issues/{pr}/comments"],
                 check=True,
@@ -496,7 +495,7 @@ def post_pr_comment(body: str) -> None:
                 text=True,
                 env={**os.environ, "GH_TOKEN": token},
             )
-                    for comment in json.loads(listing.stdout):
+            for comment in json.loads(listing.stdout):
                 if marker in (comment.get("body") or ""):
                     payload = json.dumps({"body": body_marked}).encode("utf-8")
                     req = urllib.request.Request(
