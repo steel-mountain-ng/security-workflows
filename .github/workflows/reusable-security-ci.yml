@@ -18,11 +18,16 @@ on:
         type: boolean
         required: false
         default: true
-      semgrep-rules:
-        description: Semgrep rule packs / configs
+      codeql-languages:
+        description: Comma-separated CodeQL languages
         type: string
         required: false
-        default: 'p/default p/security-audit p/nodejs'
+        default: 'javascript'
+      codeql-queries:
+        description: CodeQL query suite
+        type: string
+        required: false
+        default: 'security-and-quality'
       dockerfile:
         description: Path to Dockerfile
         type: string
@@ -38,7 +43,7 @@ on:
         type: string
         required: false
         default: 'local/app:ci'
-      run-semgrep:
+      run-codeql:
         type: boolean
         required: false
         default: true
@@ -66,31 +71,27 @@ on:
         type: boolean
         required: false
         default: true
-    secrets:
-      SEMGREP_APP_TOKEN:
-        description: Optional Semgrep Cloud token
-        required: false
 
 # Nested reusable workflows inherit the *caller* workflow token scope.
 # security-events must be granted here or SARIF upload jobs are limited to none.
 permissions:
   contents: read
+  actions: read
   security-events: write
   pull-requests: write
 
 jobs:
   # Nested reusable workflows cannot use relative ./ paths when the top-level
   # caller is another repository. Call sibling workflows with full refs instead.
-  semgrep:
-    name: Semgrep SAST
-    if: ${{ inputs.run-semgrep }}
-    uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-semgrep.yml@v1
+  codeql:
+    name: CodeQL SAST
+    if: ${{ inputs.run-codeql }}
+    uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-codeql.yml@v1
     with:
-      working-directory: ${{ inputs.working-directory }}
-      semgrep-rules: ${{ inputs.semgrep-rules }}
+      languages: ${{ inputs.codeql-languages }}
+      queries: ${{ inputs.codeql-queries }}
       upload-sarif: ${{ inputs.upload-sarif }}
-    secrets:
-      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+      fail-on-findings: true
 
   trivy-sca:
     name: Trivy SCA
@@ -143,7 +144,7 @@ jobs:
   security-gate:
     name: Security Gate
     needs:
-      - semgrep
+      - codeql
       - trivy-sca
       - trivy-iac
       - trivy-secrets
@@ -157,13 +158,13 @@ jobs:
       - name: Enforce no CRITICAL/HIGH, malware, or secrets
         shell: bash
         env:
-          SEMGREP: ${{ needs.semgrep.result }}
+          CODEQL: ${{ needs.codeql.result }}
           TRIVY_SCA: ${{ needs.trivy-sca.result }}
           TRIVY_IAC: ${{ needs.trivy-iac.result }}
           TRIVY_SECRETS: ${{ needs.trivy-secrets.result }}
           TRIVY_IMAGE: ${{ needs.trivy-image.result }}
           ROGUEPKG: ${{ needs.roguepkg.result }}
-          RUN_SEMGREP: ${{ inputs.run-semgrep }}
+          RUN_CODEQL: ${{ inputs.run-codeql }}
           RUN_TRIVY_SCA: ${{ inputs.run-trivy-sca }}
           RUN_TRIVY_IAC: ${{ inputs.run-trivy-iac }}
           RUN_TRIVY_SECRETS: ${{ inputs.run-trivy-secrets }}
@@ -175,7 +176,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Job | Enabled | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "| --- | --- | --- |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Semgrep | $RUN_SEMGREP | $SEMGREP |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| CodeQL | $RUN_CODEQL | $CODEQL |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Trivy SCA | $RUN_TRIVY_SCA | $TRIVY_SCA |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Trivy IaC | $RUN_TRIVY_IAC | $TRIVY_IAC |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Trivy Secrets | $RUN_TRIVY_SECRETS | $TRIVY_SECRETS |" >> "$GITHUB_STEP_SUMMARY"
@@ -195,7 +196,7 @@ jobs:
             fi
           }
 
-          check "$RUN_SEMGREP" "$SEMGREP" "Semgrep SAST"
+          check "$RUN_CODEQL" "$CODEQL" "CodeQL SAST"
           check "$RUN_TRIVY_SCA" "$TRIVY_SCA" "Trivy SCA"
           check "$RUN_TRIVY_IAC" "$TRIVY_IAC" "Trivy IaC"
           check "$RUN_TRIVY_SECRETS" "$TRIVY_SECRETS" "Trivy Secrets"

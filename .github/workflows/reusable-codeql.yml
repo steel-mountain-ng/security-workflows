@@ -1,0 +1,79 @@
+name: Reusable CodeQL SAST
+
+on:
+  workflow_call:
+    inputs:
+      languages:
+        description: Comma-separated CodeQL languages (e.g. javascript, python)
+        type: string
+        required: false
+        default: 'javascript'
+      queries:
+        description: CodeQL query suite
+        type: string
+        required: false
+        default: 'security-and-quality'
+      upload-sarif:
+        description: Upload results to GitHub Code Scanning
+        type: boolean
+        required: false
+        default: true
+      fail-on-findings:
+        description: Fail the job when CodeQL reports error or warning level alerts
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL SAST
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ inputs.languages }}
+          queries: ${{ inputs.queries }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ inputs.languages }}'
+          upload: ${{ inputs.upload-sarif }}
+          output: codeql-sarif
+
+      - name: Fail on error/warning findings
+        if: ${{ always() && inputs.fail-on-findings }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(codeql-sarif/*.sarif)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No SARIF output found; skipping findings gate"
+            exit 0
+          fi
+
+          count=$(jq -s '[.[].runs[]?.results[]? | select(.level == "error" or .level == "warning")] | length' "${files[@]}")
+          echo "CodeQL error/warning findings: $count"
+          echo "### CodeQL SAST" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Error/warning findings: $count" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$count" -gt 0 ]; then
+            echo "::error::CodeQL reported $count error/warning level findings"
+            exit 1
+          fi

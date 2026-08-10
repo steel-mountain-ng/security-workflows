@@ -6,7 +6,7 @@ Reusable GitHub Actions security workflows for the `steel-mountain-ng` organizat
 
 | Control | Tool | Quality gate |
 | --- | --- | --- |
-| SAST | Semgrep | Non-zero Semgrep exit fails the job |
+| SAST | CodeQL | Fail on error/warning SARIF findings |
 | SCA | Trivy (`fs`) | Fail on `CRITICAL`/`HIGH` (default) |
 | IaC | Trivy (`config`) | Fail on `CRITICAL`/`HIGH` (default) |
 | Secrets | Trivy (`secret`) | Fail on any finding |
@@ -14,6 +14,8 @@ Reusable GitHub Actions security workflows for the `steel-mountain-ng` organizat
 | Supply chain | [RoguePkg](https://github.com/radioactivetobi/roguepkg) | Fail on malware |
 
 The orchestrator ends with a single **Security Gate** job you can require in branch protection.
+
+No third-party SAST token is required — CodeQL uses GitHub’s built-in Code Scanning.
 
 ## Quick start (consumer app)
 
@@ -31,25 +33,25 @@ on:
 
 permissions:
   contents: read
+  actions: read
   security-events: write
 
 jobs:
   security:
     uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-security-ci.yml@v1
-    secrets: inherit
     with:
       fail-severity: HIGH
+      codeql-languages: javascript
 ```
 
-3. Optional secret in the consumer repo: `SEMGREP_APP_TOKEN` (Semgrep Cloud). Public rule packs work without it.
-4. In branch protection / rulesets, require the check named **Security Gate**.
+3. In branch protection / rulesets, require the check named **Security Gate**.
 
 ## Reusable workflows
 
 | Workflow | Purpose |
 | --- | --- |
 | [`reusable-security-ci.yml`](.github/workflows/reusable-security-ci.yml) | Orchestrator + Security Gate |
-| [`reusable-semgrep.yml`](.github/workflows/reusable-semgrep.yml) | SAST |
+| [`reusable-codeql.yml`](.github/workflows/reusable-codeql.yml) | SAST (CodeQL) |
 | [`reusable-trivy-sca.yml`](.github/workflows/reusable-trivy-sca.yml) | Dependency / filesystem SCA |
 | [`reusable-trivy-iac.yml`](.github/workflows/reusable-trivy-iac.yml) | Dockerfile / K8s / Terraform / etc. |
 | [`reusable-trivy-secrets.yml`](.github/workflows/reusable-trivy-secrets.yml) | Secret scanning |
@@ -61,8 +63,9 @@ jobs:
 - `fail-severity`: `CRITICAL` \| `HIGH` (default) \| `MEDIUM` \| `LOW` — maps to Trivy severity lists that fail the job
 - `upload-sarif`: upload results to the GitHub Security tab (default `true`)
 - `working-directory`: scan root (default `.`)
+- CodeQL: `codeql-languages` (default `javascript`), `codeql-queries` (default `security-and-quality`)
 - Image extras: `dockerfile`, `context`, `image-name`
-- Toggles on the orchestrator: `run-semgrep`, `run-trivy-sca`, `run-trivy-iac`, `run-trivy-secrets`, `run-trivy-image`, `run-roguepkg`
+- Toggles: `run-codeql`, `run-trivy-sca`, `run-trivy-iac`, `run-trivy-secrets`, `run-trivy-image`, `run-roguepkg`
 
 ### Permissions
 
@@ -71,7 +74,8 @@ Caller workflows should grant at least:
 ```yaml
 permissions:
   contents: read
-  security-events: write   # SARIF → Code Scanning
+  actions: read             # CodeQL
+  security-events: write    # SARIF → Code Scanning
 ```
 
 Reusable workflows themselves request least privilege per job.

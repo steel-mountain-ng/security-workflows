@@ -24,7 +24,7 @@ jobs:
 
 ## Why a central `security-workflows` repo?
 
-- One place to update Semgrep/Trivy/RoguePkg versions and gate policy
+- One place to update CodeQL/Trivy/RoguePkg versions and gate policy
 - App repos stay thin: a few lines of YAML
 - Consistent org-wide quality bars (no CRITICAL/HIGH to main / deploy)
 
@@ -32,7 +32,7 @@ jobs:
 
 - `secrets: inherit` passes the caller repo’s secrets into the reusable workflow
 - Nested reusable workflows only see secrets the parent explicitly maps (or inherits)
-- Prefer least privilege: scanner tokens only where needed (`SEMGREP_APP_TOKEN`)
+- Prefer least privilege: CodeQL needs no third-party token (uses `GITHUB_TOKEN` + `security-events: write`)
 
 ## Quality gates (this repo)
 
@@ -51,13 +51,13 @@ Interview talking point: *“We don’t block on every Medium forever — we set
     category: trivy-sca
 ```
 
-Needs `permissions: security-events: write`. Categories keep Semgrep vs Trivy results distinct.
+Needs `permissions: security-events: write` (and `actions: read` for CodeQL). Categories keep CodeQL vs Trivy results distinct.
 
 ## Control types (no DAST here)
 
 | Layer | Question it answers | Tool here |
 | --- | --- | --- |
-| SAST | Is my *code* dangerous? | Semgrep |
+| SAST | Is my *code* dangerous? | CodeQL |
 | SCA | Are my *dependencies* vulnerable? | Trivy FS |
 | IaC | Is my *config/Dockerfile* misconfigured? | Trivy config |
 | Secrets | Did we commit credentials? | Trivy secret |
@@ -84,7 +84,7 @@ Needs `permissions: security-events: write`. Categories keep Semgrep vs Trivy re
 ## Demo script with `vulnerable-app`
 
 1. Open a PR or run **Security** via `workflow_dispatch`
-2. Show parallel jobs: Semgrep, Trivy SCA/IaC/Secrets/Image, RoguePkg
+2. Show parallel jobs: CodeQL, Trivy SCA/IaC/Secrets/Image, RoguePkg
 3. Open a failed Trivy/RoguePkg log — explain CRITICAL/HIGH or malware
 4. Show Security tab SARIF alerts
 5. Explain how fixing deps/base image would turn the gate green
