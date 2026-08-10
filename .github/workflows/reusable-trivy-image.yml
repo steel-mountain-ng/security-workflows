@@ -52,6 +52,8 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build image (no push)
+        id: build
+        continue-on-error: true
         uses: docker/build-push-action@v6
         with:
           context: ${{ inputs.context }}
@@ -59,6 +61,26 @@ jobs:
           load: true
           tags: ${{ inputs.image-name }}
           push: false
+
+      - name: Resolve image to scan
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.build.outcome }}" = "success" ]; then
+            echo "ref=${{ inputs.image-name }}" >> "$GITHUB_OUTPUT"
+            echo "Built image will be scanned: ${{ inputs.image-name }}"
+          else
+            echo "::warning::Docker build failed; falling back to Dockerfile FROM base image"
+            BASE=$(grep -E '^[Ff][Rr][Oo][Mm] ' "${{ inputs.dockerfile }}" | head -n1 | awk '{print $2}' | tr -d '\r')
+            if [ -z "$BASE" ]; then
+              echo "::error::Could not determine base image from ${{ inputs.dockerfile }}"
+              exit 1
+            fi
+            echo "ref=$BASE" >> "$GITHUB_OUTPUT"
+            echo "Base image will be scanned: $BASE"
+            docker pull "$BASE"
+          fi
 
       - name: Resolve severity list
         id: severity
@@ -77,7 +99,7 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
-          image-ref: ${{ inputs.image-name }}
+          image-ref: ${{ steps.target.outputs.ref }}
           severity: ${{ steps.severity.outputs.list }}
           exit-code: '1'
           format: sarif
