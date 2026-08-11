@@ -50,6 +50,8 @@ jobs:
       dismiss-lows: true
       ai-review: true
       open-fix-prs: true
+      max-alerts: '0'   # 0 = all open non-LOW alerts (chunked via batch-size)
+      batch-size: '25'
 ```
 
 ### Optional hook from Security CI

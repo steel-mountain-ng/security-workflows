@@ -28,9 +28,13 @@ inputs:
     required: false
     default: 'false'
   max-alerts:
-    description: Max non-LOW alerts to send to the model
+    description: Max non-LOW alerts to send to the model (0 = all)
     required: false
-    default: '40'
+    default: '0'
+  batch-size:
+    description: Alerts per OpenRouter request when reviewing many findings
+    required: false
+    default: '25'
   fp-confidence:
     description: Minimum confidence to dismiss as false positive
     required: false
@@ -78,6 +82,7 @@ runs:
         AI_REVIEW: ${{ inputs.ai-review }}
         AI_OPEN_FIX_PRS: ${{ inputs.open-fix-prs }}
         AI_MAX_ALERTS: ${{ inputs.max-alerts }}
+        AI_BATCH_SIZE: ${{ inputs.batch-size }}
         AI_FP_CONFIDENCE: ${{ inputs.fp-confidence }}
         AI_FIX_CONFIDENCE: ${{ inputs.fix-confidence }}
         AI_REPO_ROOT: ${{ inputs.repo-root }}

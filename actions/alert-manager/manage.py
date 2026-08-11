@@ -168,7 +168,7 @@ def read_snippet(repo_root: Path, path: str, start: int | None, end: int | None,
     return mask_secrets(chunk)[:2000]
 
 
-def normalize_alert(alert: dict[str, Any], repo_root: Path) -> dict[str, Any]:
+def normalize_alert(alert: dict[str, Any], repo_root: Path, *, include_snippet: bool = False) -> dict[str, Any]:
     rule = alert.get("rule") or {}
     inst = alert.get("most_recent_instance") or {}
     loc = (inst.get("location") or {}) if isinstance(inst, dict) else {}
@@ -183,6 +183,13 @@ def normalize_alert(alert: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         sev = "HIGH"
     class_ = "secret" if is_secretish(alert) else "code-scanning"
     source = "trivy-secrets" if class_ == "secret" else tool.replace(" ", "-")
+    message = (
+        (inst.get("message") or {}).get("text")
+        if isinstance(inst.get("message"), dict)
+        else str(inst.get("message") or "")
+    )
+    path_l = path.lower()
+    want_snippet = include_snippet or path_l == "dockerfile" or path_l.endswith("/dockerfile")
     return {
         "id": f"alert:{alert.get('number')}",
         "alert_number": alert.get("number"),
@@ -193,13 +200,102 @@ def normalize_alert(alert: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         "path": path,
         "start_line": start,
         "end_line": end,
-        "message": (inst.get("message") or {}).get("text") if isinstance(inst.get("message"), dict) else str(inst.get("message") or ""),
+        "message": (message or "")[:500],
         "fixed_version": None,
         "package": None,
         "auto_fix_type": None,
         "class": class_,
-        "snippet": read_snippet(repo_root, path, start, end),
+        "snippet": read_snippet(repo_root, path, start, end) if want_snippet else "",
         "html_url": alert.get("html_url"),
+    }
+
+
+def slim_for_model(finding: dict[str, Any]) -> dict[str, Any]:
+    """Drop bulky fields for OpenRouter payloads."""
+    keep = (
+        "id",
+        "alert_number",
+        "source",
+        "rule_id",
+        "title",
+        "severity",
+        "path",
+        "message",
+        "class",
+        "snippet",
+    )
+    out = {k: finding.get(k) for k in keep}
+    if not out.get("snippet"):
+        out.pop("snippet", None)
+    return out
+
+
+def chunked(items: list[Any], size: int) -> list[list[Any]]:
+    if size <= 0:
+        return [items]
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def review_findings_batched(
+    findings: list[dict[str, Any]],
+    *,
+    model: str,
+    api_key: str,
+    batch_size: int,
+) -> dict[str, Any]:
+    """Send all findings to OpenRouter in chunks; merge classifications."""
+    if not findings:
+        return {"summary": "No findings to review.", "findings": [], "fallback": False}
+
+    if not api_key:
+        print("::warning::OPENROUTER_API_KEY missing; heuristic review only")
+        return heuristic_review(findings)
+
+    merged: list[dict[str, Any]] = []
+    summaries: list[str] = []
+    any_fallback = False
+    batches = chunked(findings, batch_size)
+    print(f"AI review: {len(findings)} alert(s) in {len(batches)} batch(es) of up to {batch_size}")
+
+    for idx, batch in enumerate(batches, start=1):
+        print(
+            f"AI batch {idx}/{len(batches)}: "
+            + ", ".join(f"#{f.get('alert_number')}:{f.get('rule_id')}" for f in batch[:6])
+            + (" ..." if len(batch) > 6 else "")
+        )
+        try:
+            triage = call_openrouter(model, api_key, [slim_for_model(f) for f in batch])
+            items = triage.get("findings") or []
+            # Ensure every input id has a row (model may omit some)
+            by_id = {i.get("id"): i for i in items if i.get("id")}
+            for f in batch:
+                if f["id"] in by_id:
+                    merged.append(by_id[f["id"]])
+                else:
+                    merged.append(
+                        {
+                            "id": f["id"],
+                            "classification": "needs_human",
+                            "confidence": 0.4,
+                            "remediation": "Model omitted this alert; left for human review.",
+                            "auto_fix_eligible": False,
+                            "auto_fix_type": None,
+                            "dismiss_as_fp": False,
+                        }
+                    )
+            if triage.get("summary"):
+                summaries.append(str(triage["summary"]))
+        except Exception as exc:  # noqa: BLE001
+            print(f"::warning::OpenRouter batch {idx}/{len(batches)} failed: {exc}")
+            fallback = heuristic_review(batch)
+            merged.extend(fallback.get("findings") or [])
+            any_fallback = True
+            summaries.append(f"Batch {idx} heuristic fallback.")
+
+    return {
+        "summary": " | ".join(summaries)[:2000] or f"Reviewed {len(merged)} alert(s).",
+        "findings": merged,
+        "fallback": any_fallback,
     }
 
 
@@ -317,7 +413,9 @@ def main() -> int:
     dismiss_lows = env("DISMISS_LOWS", "true").lower() == "true"
     ai_review = env("AI_REVIEW", "true").lower() == "true"
     open_fix_prs = env("AI_OPEN_FIX_PRS", "false").lower() == "true"
-    max_alerts = int(env("AI_MAX_ALERTS", "40") or 40)
+    # 0 / negative => review all open non-LOW alerts
+    max_alerts = int(env("AI_MAX_ALERTS", "0") or 0)
+    batch_size = int(env("AI_BATCH_SIZE", "25") or 25)
     fp_confidence = float(env("AI_FP_CONFIDENCE", "0.85") or 0.85)
     fix_confidence = float(env("AI_FIX_CONFIDENCE", "0.7") or 0.7)
     model = env("AI_MODEL", "openai/gpt-4o-mini")
@@ -366,11 +464,10 @@ def main() -> int:
     triage: dict[str, Any] = {"summary": "No AI review", "findings": []}
 
     if ai_review and others:
-        # Cap before expensive snippet reads; prefer allowlisted fix targets (not image FS noise)
+        # Prefer allowlisted fix targets first, then MEDIUM, then HIGH/CRITICAL
         def _batch_rank(alert: dict[str, Any]) -> tuple[int, int, str]:
             path = str(((alert.get("most_recent_instance") or {}).get("location") or {}).get("path") or "").lower()
             rule = str((alert.get("rule") or {}).get("id") or "").lower()
-            title = str((alert.get("rule") or {}).get("description") or "").lower()
             sev = alert_severity(alert)
             is_dockerfile = path == "dockerfile" or path.endswith("/dockerfile")
             is_app_manifest = path in {"package.json", "package-lock.json"} or (
@@ -378,41 +475,38 @@ def main() -> int:
                 and "/node_modules/" not in path
                 and not path.startswith("usr/")
             )
-            blob = f"{rule} {title}"
-            fixable = int(
-                is_dockerfile
-                or is_app_manifest
-                or (is_dockerfile and "user" in blob and "root" in blob)
-            )
+            fixable = int(is_dockerfile or is_app_manifest)
             sev_rank = 0 if sev == "medium" else 1 if sev in {"high", "critical", "error"} else 2
-            # Lower tuple sorts first: Dockerfile/app manifests, then by severity
             return (0 if fixable else 1, sev_rank, rule)
 
-        others_sorted = sorted(others, key=_batch_rank)[:max_alerts]
-        findings = [normalize_alert(a, repo_root) for a in others_sorted]
-        findings = findings[:max_alerts]
+        others_sorted = sorted(others, key=_batch_rank)
+        if max_alerts > 0:
+            others_sorted = others_sorted[:max_alerts]
+            print(f"Capping AI review at {max_alerts} alert(s)")
+        else:
+            print(f"AI review scope: ALL {len(others_sorted)} non-LOW open alert(s)")
+
+        findings = [normalize_alert(a, repo_root, include_snippet=False) for a in others_sorted]
         findings_by_id = {f["id"]: f for f in findings}
 
-        print(
-            "AI batch sample: "
-            + ", ".join(
-                f"#{f.get('alert_number')}:{f.get('rule_id')}:{f.get('path')}" for f in findings[:8]
-            )
+        triage = review_findings_batched(
+            findings,
+            model=model,
+            api_key=api_key,
+            batch_size=max(batch_size, 1),
         )
 
-        if api_key:
-            try:
-                slim = [{k: v for k, v in f.items() if k != "snippet" or v} for f in findings]
-                triage = call_openrouter(model, api_key, slim)
-            except Exception as exc:  # noqa: BLE001
-                print(f"::warning::OpenRouter review failed: {exc}")
-                triage = heuristic_review(findings)
-        else:
-            print("::warning::OPENROUTER_API_KEY missing; heuristic review only")
-            triage = heuristic_review(findings)
-
         eligible_pre = sum(1 for i in (triage.get("findings") or []) if i.get("auto_fix_eligible"))
-        print(f"Review findings={len(triage.get('findings') or [])} eligible_fixes={eligible_pre} fallback={bool(triage.get('fallback'))}")
+        fp_candidates = sum(
+            1
+            for i in (triage.get("findings") or [])
+            if i.get("dismiss_as_fp") or i.get("classification") == "likely_false_positive"
+        )
+        print(
+            f"Review findings={len(triage.get('findings') or [])} "
+            f"fp_candidates={fp_candidates} eligible_fixes={eligible_pre} "
+            f"fallback={bool(triage.get('fallback'))}"
+        )
 
         for item in triage.get("findings") or []:
             base = findings_by_id.get(item.get("id") or "", {})
@@ -421,7 +515,7 @@ def main() -> int:
                 {"rule": {"id": base.get("rule_id"), "description": base.get("title")}, "tool": {"name": base.get("source")}}
             )
 
-            # Enforce dismiss policy
+            # Enforce dismiss policy (MEDIUM + non-secret + high confidence only)
             want_fp = bool(item.get("dismiss_as_fp")) or item.get("classification") == "likely_false_positive"
             conf = float(item.get("confidence") or 0)
             can_dismiss_fp = (
@@ -463,6 +557,8 @@ def main() -> int:
 
     write_output("dismissed-fps", str(dismissed_fps))
     write_output("fix-pr-urls", ",".join(fix_urls))
+    reviewed = len(triage.get("findings") or [])
+    append_summary(f"- AI-reviewed alerts: **{reviewed}**")
     append_summary(f"- AI false positives dismissed: **{dismissed_fps}**")
     append_summary(f"- Draft fix PRs: **{len(fix_urls)}**")
     if fix_urls:
