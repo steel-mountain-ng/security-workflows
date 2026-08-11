@@ -71,6 +71,7 @@ runs:
       id: run
       shell: bash
       env:
+        PYTHONUNBUFFERED: '1'
         OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
         AI_MODEL: ${{ inputs.model }}
         DISMISS_LOWS: ${{ inputs.dismiss-lows }}

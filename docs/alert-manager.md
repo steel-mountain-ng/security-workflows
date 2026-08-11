@@ -23,6 +23,8 @@ Backlog hygiene for **open GitHub Code Scanning alerts**. Complements PR AI tria
 - Never dismiss secret-like rules
 - Draft PRs only; Security Gate remains merge authority
 - Job is `continue-on-error: true`
+- LOW dismiss runs even without OpenRouter; AI FP dismiss requires a valid `OPENROUTER_API_KEY`
+- If OpenRouter fails (e.g. 401), heuristic review can still open allowlisted draft fix PRs; it never auto-dismisses FPs
 
 ## Usage
 

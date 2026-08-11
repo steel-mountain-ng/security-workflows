@@ -284,18 +284,22 @@ def heuristic_review(findings: list[dict[str, Any]]) -> dict[str, Any]:
         eligible = False
         title = (f.get("title") or "").lower()
         path = (f.get("path") or "").lower()
-        if "dockerfile" in path and "user" in title and "root" in title:
+        rule = (f.get("rule_id") or "").lower()
+        blob = f"{title} {rule}"
+        if ("dockerfile" in path or path.endswith("dockerfile")) and "user" in blob and "root" in blob:
             fix_type = "dockerfile_user_root"
             eligible = True
-        elif path.endswith("dockerfile") or path == "dockerfile":
-            if "from" in title or "base" in title or "image" in title:
+        elif path.endswith("dockerfile") or path == "dockerfile" or path.endswith("/dockerfile"):
+            if any(k in blob for k in ("from", "base", "image", "vuln", "cve")):
                 fix_type = "base_image_update"
                 eligible = True
+        # Allowlisted mechanical matches get threshold-passing confidence; never FP-dismiss without AI
+        confidence = 0.8 if eligible else 0.55
         items.append(
             {
                 "id": f["id"],
                 "classification": "needs_human" if f.get("severity") in {"CRITICAL", "HIGH"} else "likely_true_positive",
-                "confidence": 0.55,
+                "confidence": confidence,
                 "exploitability": "Heuristic only — model unavailable.",
                 "reachability": "Not analyzed (fallback).",
                 "business_impact": f.get("severity"),
