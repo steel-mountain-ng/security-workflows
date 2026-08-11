@@ -1,0 +1,37 @@
+{
+  "description": "Labeled findings for confidence-scoring model comparison",
+  "findings": [
+    {
+      "id": "alert:9",
+      "alert_number": 9,
+      "ground_truth": "likely_true_positive",
+      "ground_truth_note": "App code sets session cookie with secure:false — actionable MEDIUM TP.",
+      "source": "codeql",
+      "rule_id": "js/clear-text-cookie",
+      "title": "Clear text transmission of sensitive cookie",
+      "severity": "MEDIUM",
+      "path": "src/index.js",
+      "start_line": 23,
+      "end_line": 28,
+      "message": "Sensitive cookie sent without enforcing SSL encryption.",
+      "class": "code-scanning",
+      "snippet": "22:// Insecure session configuration\n23:app.use(session({\n24:    secret: 'keyboard cat', // Weak secret\n25:    resave: true,\n26:    saveUninitialized: true,\n27:    cookie: { secure: false } // Insecure cookie settings\n28:}));"
+    },
+    {
+      "id": "alert:3303",
+      "alert_number": 3303,
+      "ground_truth": "likely_false_positive",
+      "ground_truth_note": "Image/FS CVE under usr/local/lib/node_modules/npm/... — scanner noise vs app runtime reachability; label as non-actionable app TP (needs_human_noise acceptable).",
+      "source": "trivy",
+      "rule_id": "CVE-2026-48815",
+      "title": "sigstore: Unauthorized certificates accepted due to ignored certificateOIDs verification option",
+      "severity": "HIGH",
+      "path": "usr/local/lib/node_modules/npm/node_modules/sigstore/package.json",
+      "start_line": 1,
+      "end_line": 1,
+      "message": "Package: sigstore\nInstalled Version: 2.3.1\nVulnerability CVE-2026-48815\nSeverity: HIGH\nFixed Version: 4.1.1",
+      "class": "code-scanning",
+      "snippet": ""
+    }
+  ]
+}

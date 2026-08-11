@@ -5,3 +5,4 @@ __pycache__/
 venv/
 .env
 .DS_Store
+scripts/fixtures/confidence_benchmark_results.json

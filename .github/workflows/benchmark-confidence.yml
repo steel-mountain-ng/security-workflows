@@ -1,0 +1,43 @@
+name: Confidence Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: Space-separated OpenRouter model ids
+        type: string
+        required: false
+        default: 'anthropic/claude-opus-5 deepseek/deepseek-v4-flash-0731'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Score TP/FP fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run confidence benchmark
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python scripts/benchmark_confidence.py \
+            --models ${{ inputs.models }} \
+            --out scripts/fixtures/confidence_benchmark_results.json
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: confidence-benchmark-results
+          path: scripts/fixtures/confidence_benchmark_results.json
+          if-no-files-found: ignore
