@@ -4,10 +4,38 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: Space-separated OpenRouter model ids
+        description: >-
+          Space-separated OpenRouter model specs (use openrouter/auto@low for cost tier).
+          Leave default for the full cost-effectiveness matrix.
         type: string
         required: false
-        default: 'anthropic/claude-opus-5 deepseek/deepseek-v4-flash-0731'
+        default: >-
+          deepseek/deepseek-v4-flash-0731
+          google/gemini-3.5-flash-lite
+          openai/gpt-4o-mini
+          openai/gpt-4.1-mini
+          meta-llama/llama-3.1-8b-instruct
+          qwen/qwen3-8b
+          z-ai/glm-4.5-air
+          anthropic/claude-sonnet-4.5
+          openai/gpt-4o
+          openai/gpt-4.1
+          google/gemini-2.5-flash
+          deepseek/deepseek-chat-v3.1
+          meta-llama/llama-3.3-70b-instruct
+          qwen/qwen3-32b
+          z-ai/glm-4.5
+          anthropic/claude-opus-5
+          openai/o4-mini
+          openai/o3-mini
+          google/gemini-2.5-pro
+          openrouter/auto@low
+          openrouter/auto@medium
+      write_report:
+        description: Write docs/confidence-benchmark-report.md artifact
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -16,7 +44,7 @@ jobs:
   benchmark:
     name: Score TP/FP fixtures
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,14 +58,23 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
+          set -euo pipefail
+          REPORT_FLAG=()
+          if [ "${{ inputs.write_report }}" = "true" ]; then
+            REPORT_FLAG=(--report docs/confidence-benchmark-report.md)
+          fi
+          # shellcheck disable=SC2086
           python scripts/benchmark_confidence.py \
             --models ${{ inputs.models }} \
-            --out scripts/fixtures/confidence_benchmark_results.json
+            --out scripts/fixtures/confidence_benchmark_results.json \
+            "${REPORT_FLAG[@]}"
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: confidence-benchmark-results
-          path: scripts/fixtures/confidence_benchmark_results.json
+          path: |
+            scripts/fixtures/confidence_benchmark_results.json
+            docs/confidence-benchmark-report.md
           if-no-files-found: ignore
