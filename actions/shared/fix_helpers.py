@@ -209,6 +209,15 @@ def open_draft_fix_prs(
             if exc.stderr:
                 stderr = exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode("utf-8", "replace")
             print(f"::warning::Failed to open draft fix PR for {fix_type}: {exc} {stderr[:500]}")
+            # Branch may already be pushed; surface it when org blocks Actions PR creation
+            branch_url = f"{env('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/tree/{branch}"
+            compare_url = (
+                f"{env('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/compare/"
+                f"{env('GITHUB_REF_NAME') or 'main'}...{branch}?expand=1"
+            )
+            print(f"::notice::Fix branch available: {branch_url}")
+            print(f"::notice::Open PR manually: {compare_url}")
+            urls.append(compare_url)
         except Exception as exc:  # noqa: BLE001
             print(f"::warning::Failed to open draft fix PR for {fix_type}: {exc}")
         finally:

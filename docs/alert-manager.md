@@ -25,6 +25,7 @@ Backlog hygiene for **open GitHub Code Scanning alerts**. Complements PR AI tria
 - Job is `continue-on-error: true`
 - LOW dismiss runs even without OpenRouter; AI FP dismiss requires a valid `OPENROUTER_API_KEY`
 - If OpenRouter fails (e.g. 401), heuristic review can still open allowlisted draft fix PRs; it never auto-dismisses FPs
+- Draft PRs need org/repo **Allow GitHub Actions to create and approve pull requests** (plus workflow `pull-requests: write`). If blocked, the action pushes a fix branch and prints a compare URL instead.
 
 ## Usage
 
