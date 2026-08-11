@@ -50,8 +50,10 @@ jobs:
       dismiss-lows: true
       ai-review: true
       open-fix-prs: true
-      max-alerts: '0'   # 0 = all open non-LOW alerts (chunked via batch-size)
-      batch-size: '25'
+      model: openrouter/auto   # Auto Router; cost-tier: low|medium|high|xhigh|max
+      max-alerts: '0'          # 0 = all open non-LOW alerts
+      batch-size: '40'
+      concurrency: '8'         # parallel AI agent workers
 ```
 
 ### Optional hook from Security CI

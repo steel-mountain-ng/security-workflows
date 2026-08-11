@@ -12,9 +12,9 @@ inputs:
     required: false
     default: ''
   model:
-    description: OpenRouter model id
+    description: OpenRouter model id (prefer openrouter/auto)
     required: false
-    default: 'openai/gpt-4o-mini'
+    default: 'openrouter/auto'
   dismiss-lows:
     description: Auto-dismiss all open LOW / note severity alerts
     required: false
@@ -34,7 +34,15 @@ inputs:
   batch-size:
     description: Alerts per OpenRouter request when reviewing many findings
     required: false
-    default: '25'
+    default: '40'
+  concurrency:
+    description: Parallel AI agent workers (batches in flight)
+    required: false
+    default: '8'
+  cost-tier:
+    description: OpenRouter auto-router cost tier (low|medium|high|xhigh|max)
+    required: false
+    default: 'low'
   fp-confidence:
     description: Minimum confidence to dismiss as false positive
     required: false
@@ -83,6 +91,8 @@ runs:
         AI_OPEN_FIX_PRS: ${{ inputs.open-fix-prs }}
         AI_MAX_ALERTS: ${{ inputs.max-alerts }}
         AI_BATCH_SIZE: ${{ inputs.batch-size }}
+        AI_CONCURRENCY: ${{ inputs.concurrency }}
+        AI_COST_TIER: ${{ inputs.cost-tier }}
         AI_FP_CONFIDENCE: ${{ inputs.fp-confidence }}
         AI_FIX_CONFIDENCE: ${{ inputs.fix-confidence }}
         AI_REPO_ROOT: ${{ inputs.repo-root }}

@@ -10,6 +10,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -236,14 +237,65 @@ def chunked(items: list[Any], size: int) -> list[list[Any]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
+def _normalize_batch_items(
+    batch: list[dict[str, Any]], items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    by_id = {i.get("id"): i for i in items if i.get("id")}
+    out: list[dict[str, Any]] = []
+    for f in batch:
+        if f["id"] in by_id:
+            out.append(by_id[f["id"]])
+        else:
+            out.append(
+                {
+                    "id": f["id"],
+                    "classification": "needs_human",
+                    "confidence": 0.4,
+                    "remediation": "Model omitted this alert; left for human review.",
+                    "auto_fix_eligible": False,
+                    "auto_fix_type": None,
+                    "dismiss_as_fp": False,
+                }
+            )
+    return out
+
+
+def _review_one_batch(
+    idx: int,
+    total: int,
+    batch: list[dict[str, Any]],
+    *,
+    model: str,
+    api_key: str,
+) -> tuple[int, list[dict[str, Any]], str, bool, str]:
+    """Worker: review one batch. Returns (idx, items, summary, fallback, routed_model)."""
+    label = (
+        f"AI agent {idx}/{total}: "
+        + ", ".join(f"#{f.get('alert_number')}:{f.get('rule_id')}" for f in batch[:6])
+        + (" ..." if len(batch) > 6 else "")
+    )
+    print(label, flush=True)
+    try:
+        triage, routed = call_openrouter(model, api_key, [slim_for_model(f) for f in batch])
+        items = _normalize_batch_items(batch, triage.get("findings") or [])
+        summary = str(triage.get("summary") or f"Batch {idx} ok ({routed})")
+        print(f"AI agent {idx}/{total} done via {routed}", flush=True)
+        return idx, items, summary, False, routed
+    except Exception as exc:  # noqa: BLE001
+        print(f"::warning::OpenRouter agent {idx}/{total} failed: {exc}", flush=True)
+        fallback = heuristic_review(batch)
+        return idx, fallback.get("findings") or [], f"Batch {idx} heuristic fallback.", True, "heuristic"
+
+
 def review_findings_batched(
     findings: list[dict[str, Any]],
     *,
     model: str,
     api_key: str,
     batch_size: int,
+    concurrency: int,
 ) -> dict[str, Any]:
-    """Send all findings to OpenRouter in chunks; merge classifications."""
+    """Send findings to OpenRouter in parallel agent batches; merge classifications."""
     if not findings:
         return {"summary": "No findings to review.", "findings": [], "fallback": False}
 
@@ -251,55 +303,57 @@ def review_findings_batched(
         print("::warning::OPENROUTER_API_KEY missing; heuristic review only")
         return heuristic_review(findings)
 
+    batches = chunked(findings, batch_size)
+    workers = max(1, min(concurrency, len(batches)))
+    print(
+        f"AI multi-agent review: {len(findings)} alert(s), {len(batches)} batch(es) "
+        f"x up to {batch_size}, concurrency={workers}, model={model}"
+    )
+
+    results: dict[int, tuple[list[dict[str, Any]], str, bool, str]] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(
+                _review_one_batch,
+                idx,
+                len(batches),
+                batch,
+                model=model,
+                api_key=api_key,
+            ): idx
+            for idx, batch in enumerate(batches, start=1)
+        }
+        for fut in as_completed(futures):
+            idx, items, summary, fallback, routed = fut.result()
+            results[idx] = (items, summary, fallback, routed)
+
     merged: list[dict[str, Any]] = []
     summaries: list[str] = []
+    routed_models: list[str] = []
     any_fallback = False
-    batches = chunked(findings, batch_size)
-    print(f"AI review: {len(findings)} alert(s) in {len(batches)} batch(es) of up to {batch_size}")
+    for idx in sorted(results):
+        items, summary, fallback, routed = results[idx]
+        merged.extend(items)
+        summaries.append(summary)
+        routed_models.append(routed)
+        any_fallback = any_fallback or fallback
 
-    for idx, batch in enumerate(batches, start=1):
-        print(
-            f"AI batch {idx}/{len(batches)}: "
-            + ", ".join(f"#{f.get('alert_number')}:{f.get('rule_id')}" for f in batch[:6])
-            + (" ..." if len(batch) > 6 else "")
-        )
-        try:
-            triage = call_openrouter(model, api_key, [slim_for_model(f) for f in batch])
-            items = triage.get("findings") or []
-            # Ensure every input id has a row (model may omit some)
-            by_id = {i.get("id"): i for i in items if i.get("id")}
-            for f in batch:
-                if f["id"] in by_id:
-                    merged.append(by_id[f["id"]])
-                else:
-                    merged.append(
-                        {
-                            "id": f["id"],
-                            "classification": "needs_human",
-                            "confidence": 0.4,
-                            "remediation": "Model omitted this alert; left for human review.",
-                            "auto_fix_eligible": False,
-                            "auto_fix_type": None,
-                            "dismiss_as_fp": False,
-                        }
-                    )
-            if triage.get("summary"):
-                summaries.append(str(triage["summary"]))
-        except Exception as exc:  # noqa: BLE001
-            print(f"::warning::OpenRouter batch {idx}/{len(batches)} failed: {exc}")
-            fallback = heuristic_review(batch)
-            merged.extend(fallback.get("findings") or [])
-            any_fallback = True
-            summaries.append(f"Batch {idx} heuristic fallback.")
+    unique_routes = sorted({m for m in routed_models if m and m != "heuristic"})
+    if unique_routes:
+        print(f"OpenRouter routed models: {', '.join(unique_routes)}")
 
     return {
         "summary": " | ".join(summaries)[:2000] or f"Reviewed {len(merged)} alert(s).",
         "findings": merged,
         "fallback": any_fallback,
+        "routed_models": unique_routes,
     }
 
 
-def call_openrouter(model: str, api_key: str, findings: list[dict[str, Any]]) -> dict[str, Any]:
+def call_openrouter(
+    model: str, api_key: str, findings: list[dict[str, Any]]
+) -> tuple[dict[str, Any], str]:
+    """Call OpenRouter chat completions. Returns (triage_json, routed_model)."""
     system = (
         "You are a senior application security engineer managing a Code Scanning backlog. "
         "Classify each alert. Prefer needs_human when unsure. "
@@ -326,7 +380,7 @@ def call_openrouter(model: str, api_key: str, findings: list[dict[str, Any]]) ->
             }
         ],
     }
-    body = {
+    body: dict[str, Any] = {
         "model": model,
         "temperature": 0.1,
         "response_format": {"type": "json_object"},
@@ -350,6 +404,12 @@ def call_openrouter(model: str, api_key: str, findings: list[dict[str, Any]]) ->
             },
         ],
     }
+    # Prefer OpenRouter Auto Router when using openrouter/auto*
+    if model.startswith("openrouter/auto"):
+        plugin_id = "auto-beta-router" if "beta" in model else "auto-router"
+        cost_tier = env("AI_COST_TIER", "low") or "low"
+        body["plugins"] = [{"id": plugin_id, "cost_tier": cost_tier}]
+
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
         data=json.dumps(body).encode("utf-8"),
@@ -361,8 +421,9 @@ def call_openrouter(model: str, api_key: str, findings: list[dict[str, Any]]) ->
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=180) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
+    routed = str(payload.get("model") or model)
     content = payload["choices"][0]["message"]["content"]
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
@@ -370,7 +431,7 @@ def call_openrouter(model: str, api_key: str, findings: list[dict[str, Any]]) ->
     if content.startswith("```"):
         content = re.sub(r"^```(?:json)?\s*", "", content)
         content = re.sub(r"\s*```$", "", content)
-    return json.loads(content)
+    return json.loads(content), routed
 
 
 def heuristic_review(findings: list[dict[str, Any]]) -> dict[str, Any]:
@@ -415,10 +476,11 @@ def main() -> int:
     open_fix_prs = env("AI_OPEN_FIX_PRS", "false").lower() == "true"
     # 0 / negative => review all open non-LOW alerts
     max_alerts = int(env("AI_MAX_ALERTS", "0") or 0)
-    batch_size = int(env("AI_BATCH_SIZE", "25") or 25)
+    batch_size = int(env("AI_BATCH_SIZE", "40") or 40)
+    concurrency = int(env("AI_CONCURRENCY", "8") or 8)
     fp_confidence = float(env("AI_FP_CONFIDENCE", "0.85") or 0.85)
     fix_confidence = float(env("AI_FIX_CONFIDENCE", "0.7") or 0.7)
-    model = env("AI_MODEL", "openai/gpt-4o-mini")
+    model = env("AI_MODEL", "openrouter/auto") or "openrouter/auto"
     api_key = env("OPENROUTER_API_KEY")
     repo_root = Path(env("AI_REPO_ROOT", ".")).resolve()
 
@@ -494,6 +556,7 @@ def main() -> int:
             model=model,
             api_key=api_key,
             batch_size=max(batch_size, 1),
+            concurrency=max(concurrency, 1),
         )
 
         eligible_pre = sum(1 for i in (triage.get("findings") or []) if i.get("auto_fix_eligible"))
@@ -558,6 +621,10 @@ def main() -> int:
     write_output("dismissed-fps", str(dismissed_fps))
     write_output("fix-pr-urls", ",".join(fix_urls))
     reviewed = len(triage.get("findings") or [])
+    append_summary(f"- AI model: `{model}` (cost-tier={env('AI_COST_TIER', 'low') or 'low'}, concurrency={concurrency})")
+    routed = triage.get("routed_models") or []
+    if routed:
+        append_summary(f"- Auto-routed models: `{', '.join(routed)}`")
     append_summary(f"- AI-reviewed alerts: **{reviewed}**")
     append_summary(f"- AI false positives dismissed: **{dismissed_fps}**")
     append_summary(f"- Draft fix PRs: **{len(fix_urls)}**")

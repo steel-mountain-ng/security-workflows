@@ -19,10 +19,10 @@ on:
         required: false
         default: false
       model:
-        description: OpenRouter model id
+        description: OpenRouter model id (prefer openrouter/auto)
         type: string
         required: false
-        default: 'openai/gpt-4o-mini'
+        default: 'openrouter/auto'
       max-alerts:
         description: Max non-LOW alerts sent to the model (0 = all)
         type: string
@@ -32,7 +32,17 @@ on:
         description: Alerts per OpenRouter request
         type: string
         required: false
-        default: '25'
+        default: '40'
+      concurrency:
+        description: Parallel AI agent workers
+        type: string
+        required: false
+        default: '8'
+      cost-tier:
+        description: OpenRouter auto-router cost tier
+        type: string
+        required: false
+        default: 'low'
       fp-confidence:
         description: Minimum confidence to dismiss as false positive
         type: string
@@ -78,6 +88,8 @@ jobs:
           open-fix-prs: ${{ inputs.open-fix-prs }}
           max-alerts: ${{ inputs.max-alerts }}
           batch-size: ${{ inputs.batch-size }}
+          concurrency: ${{ inputs.concurrency }}
+          cost-tier: ${{ inputs.cost-tier }}
           fp-confidence: ${{ inputs.fp-confidence }}
           fix-confidence: ${{ inputs.fix-confidence }}
           github-token: ${{ github.token }}
