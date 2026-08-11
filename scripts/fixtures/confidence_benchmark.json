@@ -20,8 +20,8 @@
     {
       "id": "alert:3303",
       "alert_number": 3303,
-      "ground_truth": "likely_false_positive",
-      "ground_truth_note": "Image/FS CVE under usr/local/lib/node_modules/npm/... — scanner noise vs app runtime reachability; label as non-actionable app TP (needs_human_noise acceptable).",
+      "ground_truth": "true_positive_not_reachable",
+      "ground_truth_note": "Real image/FS CVE under usr/local/lib/node_modules/npm/... — TP but not app-reachable (image toolchain). Do NOT call this likely_false_positive.",
       "source": "trivy",
       "rule_id": "CVE-2026-48815",
       "title": "sigstore: Unauthorized certificates accepted due to ignored certificateOIDs verification option",
@@ -32,6 +32,31 @@
       "message": "Package: sigstore\nInstalled Version: 2.3.1\nVulnerability CVE-2026-48815\nSeverity: HIGH\nFixed Version: 4.1.1",
       "class": "code-scanning",
       "snippet": ""
+    },
+    {
+      "id": "alert:3195",
+      "alert_number": 3195,
+      "ground_truth": "true_positive_not_reachable",
+      "ground_truth_note": "CVE-2026-69152 brace-expansion DoS via expand() without maxLength — real CVE in Node image npm toolchain tree, not vulnerable-app runtime deps.",
+      "source": "trivy-image",
+      "rule_id": "CVE-2026-69152",
+      "title": "brace-expansion: Denial of Service via unbounded intermediate arrays",
+      "severity": "HIGH",
+      "path": "usr/local/lib/node_modules/npm/node_modules/brace-expansion/package.json",
+      "start_line": 1,
+      "end_line": 1,
+      "message": "Package: brace-expansion\nInstalled Version: 2.0.1\nVulnerability CVE-2026-69152\nSeverity: HIGH\nFixed Version: 1.1.18, 2.1.4, 3.0.6, 5.0.9\nLink: https://avd.aquasec.com/nvd/cve-2026-69152",
+      "help_uri": "https://avd.aquasec.com/nvd/cve-2026-69152",
+      "class": "code-scanning",
+      "snippet": "",
+      "decision_context": {
+        "package": "brace-expansion",
+        "installed_version": "2.0.1",
+        "fixed_version": "1.1.18, 2.1.4, 3.0.6, 5.0.9",
+        "cve": "CVE-2026-69152",
+        "dependency_role_hint": "image_toolchain",
+        "advisory_excerpt": "expand() does not apply maxLength while constructing comma-alternative intermediate arrays; attacker-controlled input can exhaust memory."
+      }
     }
   ]
 }

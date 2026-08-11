@@ -18,6 +18,15 @@ from fix_helpers import (
     NEVER_AUTO_FIX_SOURCES,
     open_draft_fix_prs,
 )
+from vuln_checklist import (
+    build_decision_context,
+    build_decision_report_md,
+    bulk_system_prompt,
+    checklist_rules,
+    group_findings_for_pr_comment,
+    normalize_classification,
+    response_schema,
+)
 
 SEVERITY_RANK = {
     "CRITICAL": 0,
@@ -272,42 +281,32 @@ def load_findings(findings_dir: Path, repo_root: Path, max_findings: int) -> lis
 
     for f in findings:
         f["snippet"] = read_snippet(repo_root, f.get("path") or "", f.get("start_line"), f.get("end_line"))
+        f["decision_context"] = build_decision_context(
+            path=str(f.get("path") or ""),
+            message=str(f.get("message") or ""),
+            help_uri=str(f.get("help_uri") or ""),
+            full_description=str(f.get("title") or f.get("message") or ""),
+            sarif_classifications=[],
+            repo_root=repo_root,
+            fetch_advisory=False,
+        )
     return findings
 
 
 def call_openrouter(model: str, api_key: str, findings: list[dict[str, Any]], gate_status: str) -> dict[str, Any]:
     system = (
-        "You are a senior application security engineer triaging CI scanner findings. "
-        "Be precise. Never invent CVEs or file paths. Prefer needs_human when unsure. "
-        "Do not claim secrets are fixed by deleting them — recommend rotation. "
-        "AI triage is advisory only; it must never override hard security gates. "
-        "Return ONLY valid JSON matching the schema."
+        bulk_system_prompt()
+        + " Do not claim secrets are fixed by deleting them — recommend rotation. "
+        "AI triage is advisory only; it must never override hard security gates."
     )
-    schema_hint = {
-        "summary": "string",
-        "gate_note": "string — remind that Security Gate remains authoritative",
-        "findings": [
-            {
-                "id": "finding id from input",
-                "classification": "likely_true_positive|likely_false_positive|needs_human",
-                "confidence": 0.0,
-                "exploitability": "string",
-                "reachability": "string",
-                "business_impact": "string",
-                "remediation": "string",
-                "patch_sketch": "string or empty",
-                "auto_fix_eligible": False,
-                "auto_fix_type": "dockerfile_user_root|dependency_fixed_version|base_image_update|null",
-            }
-        ],
-    }
     user_payload = {
         "gate_status": gate_status,
         "run_url": env("GITHUB_RUN_URL"),
         "repository": env("GITHUB_REPOSITORY"),
         "findings": findings,
-        "response_schema": schema_hint,
+        "response_schema": response_schema(),
         "rules": {
+            **checklist_rules(),
             "never_auto_fix_sources": sorted(NEVER_AUTO_FIX_SOURCES),
             "auto_fix_allowlist": sorted(AUTO_FIX_ALLOWLIST),
         },
@@ -355,17 +354,26 @@ def heuristic_triage(findings: list[dict[str, Any]], gate_status: str) -> dict[s
     items = []
     for f in findings:
         source = f.get("source") or ""
-        cls = "likely_true_positive"
-        if source in NEVER_AUTO_FIX_SOURCES or f.get("class") == "secret":
+        ctx = f.get("decision_context") or {}
+        role = (ctx.get("dependency_role_hint") or "").lower()
+        if role == "image_toolchain":
+            cls = "true_positive_not_reachable"
+            rem = "Real package CVE in image/toolchain path; not app-reachable — do not treat as false positive."
+            auto = False
+        elif source in NEVER_AUTO_FIX_SOURCES or f.get("class") == "secret":
+            cls = "likely_true_positive"
             auto = False
             rem = "Rotate/revoke the credential, purge from git history, and move secrets to a vault/CI secret store."
         elif f.get("auto_fix_type") in AUTO_FIX_ALLOWLIST and f.get("fixed_version"):
+            cls = "likely_true_positive"
             auto = True
             rem = f"Upgrade {f.get('package')} to {f.get('fixed_version')}."
         elif f.get("auto_fix_type") == "dockerfile_user_root":
+            cls = "likely_true_positive"
             auto = True
             rem = "Run as non-root USER (e.g. appuser) after creating the user."
         else:
+            cls = "likely_true_positive"
             auto = False
             rem = f.get("message") or "Review and remediate according to scanner guidance."
         items.append(
@@ -373,8 +381,16 @@ def heuristic_triage(findings: list[dict[str, Any]], gate_status: str) -> dict[s
                 "id": f["id"],
                 "classification": cls,
                 "confidence": 0.55,
+                "advisory_summary": (ctx.get("advisory_excerpt") or f.get("title") or "")[:400],
+                "exploit_conditions": "unknown (heuristic)",
+                "public_exploit_known": "unknown",
+                "reachability": "image_toolchain" if role == "image_toolchain" else "unknown",
+                "user_input_required": "unknown",
+                "mitigations": "",
+                "dependency_role": role or "transitive_unknown",
+                "fix_risk": "unknown",
+                "decision_rationale": rem,
                 "exploitability": "Heuristic only — model unavailable; treat as potentially exploitable until proven otherwise.",
-                "reachability": "Not analyzed (fallback mode).",
                 "business_impact": f.get("severity", "UNKNOWN"),
                 "remediation": rem,
                 "patch_sketch": "",
@@ -399,6 +415,9 @@ def render_markdown(
     gate_status: str,
     fix_pr_urls: list[str],
 ) -> str:
+    items = triage.get("findings") or []
+    for item in items:
+        item["classification"] = normalize_classification(item.get("classification"))
     lines = [
         "### AI Security Triage (advisory)",
         "",
@@ -408,30 +427,19 @@ def render_markdown(
         "",
         triage.get("gate_note") or "",
         "",
-        "| Finding | Class | Conf. | Exploitability | Reachability | Remediation |",
-        "| --- | --- | --- | --- | --- | --- |",
+        group_findings_for_pr_comment(items, findings_by_id),
+        "",
+        build_decision_report_md(
+            items,
+            findings_by_id,
+            title="Decision report",
+            run_url=env("GITHUB_RUN_URL"),
+            max_cards=20,
+        ),
+        "",
     ]
-    for item in triage.get("findings") or []:
-        fid = item.get("id") or ""
-        base = findings_by_id.get(fid, {})
-        label = f"`{base.get('rule_id', fid)}` ({base.get('source', '?')})"
-        if base.get("path"):
-            loc = base["path"]
-            if base.get("start_line"):
-                loc += f":{base['start_line']}"
-            label += f"<br>`{loc}`"
-        lines.append(
-            "| {finding} | {cls} | {conf} | {exp} | {reach} | {rem} |".format(
-                finding=label.replace("|", "\\|"),
-                cls=(item.get("classification") or "").replace("|", "\\|"),
-                conf=item.get("confidence", ""),
-                exp=(item.get("exploitability") or "").replace("|", "\\|").replace("\n", " "),
-                reach=(item.get("reachability") or "").replace("|", "\\|").replace("\n", " "),
-                rem=(item.get("remediation") or "").replace("|", "\\|").replace("\n", " "),
-            )
-        )
     if fix_pr_urls:
-        lines.extend(["", "#### Draft fix PRs", ""])
+        lines.extend(["#### Draft fix PRs", ""])
         for url in fix_pr_urls:
             lines.append(f"- {url}")
     lines.extend(
@@ -562,9 +570,12 @@ def main() -> int:
             print(f"::warning::OpenRouter triage failed: {exc}")
             triage = heuristic_triage(findings, gate_status)
 
-    # Enforce never-auto-fix policy server-side
+    # Enforce never-auto-fix policy server-side + normalize classifications
     for item in triage.get("findings") or []:
+        item["classification"] = normalize_classification(item.get("classification"))
         base = findings_by_id.get(item.get("id") or "", {})
+        if item.get("classification") != "likely_true_positive":
+            item["auto_fix_eligible"] = False
         if base.get("source") in NEVER_AUTO_FIX_SOURCES or base.get("class") == "secret":
             item["auto_fix_eligible"] = False
             item["auto_fix_type"] = None

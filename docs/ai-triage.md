@@ -5,14 +5,18 @@ Advisory layer on top of the hard **Security Gate**. It explains findings and ca
 ## What it does
 
 1. Downloads scanner JSON/SARIF artifacts from the same workflow run
-2. Builds a capped finding list with short, redacted code snippets
-3. Calls [OpenRouter](https://openrouter.ai) with a strict JSON schema
-4. Posts a sticky PR comment covering:
-   - likely true/false positive
-   - confidence
-   - exploitability / reachability
-   - remediation guidance
-5. Optionally opens **draft** fix PRs for allowlisted mechanical fixes
+2. Builds a capped finding list with short, redacted code snippets + dependency-role hints
+3. Calls [OpenRouter](https://openrouter.ai) with the in-action **exploitability checklist** schema (same taxonomy as alert-manager)
+4. Posts a sticky PR comment grouped by:
+   - likely true positives
+   - TP but not reachable (e.g. image toolchain CVEs)
+   - TP but fix may break
+   - likely false positives
+   - needs human
+5. Writes the same decision report to the job step summary
+6. Optionally opens **draft** fix PRs for allowlisted mechanical fixes (`likely_true_positive` only)
+
+See [`alert-manager.md`](alert-manager.md) for the checklist fields and the `#3195` brace-expansion example.
 
 ## Hard guardrails
 

@@ -19,6 +19,17 @@ from fix_helpers import (
     NEVER_AUTO_FIX_SOURCES,
     open_draft_fix_prs,
 )
+from vuln_checklist import (
+    build_decision_context,
+    build_decision_report_md,
+    bulk_system_prompt,
+    can_auto_dismiss,
+    checklist_rules,
+    fp_gate_system_prompt,
+    normalize_classification,
+    parse_trivy_message,
+    response_schema,
+)
 
 LOW_SEVERITIES = {"low", "note", "none", "unknown"}
 HIGH_SEVERITIES = {"critical", "high", "error"}
@@ -169,7 +180,13 @@ def read_snippet(repo_root: Path, path: str, start: int | None, end: int | None,
     return mask_secrets(chunk)[:2000]
 
 
-def normalize_alert(alert: dict[str, Any], repo_root: Path, *, include_snippet: bool = False) -> dict[str, Any]:
+def normalize_alert(
+    alert: dict[str, Any],
+    repo_root: Path,
+    *,
+    include_snippet: bool = False,
+    fetch_advisory: bool = True,
+) -> dict[str, Any]:
     rule = alert.get("rule") or {}
     inst = alert.get("most_recent_instance") or {}
     loc = (inst.get("location") or {}) if isinstance(inst, dict) else {}
@@ -191,6 +208,19 @@ def normalize_alert(alert: dict[str, Any], repo_root: Path, *, include_snippet: 
     )
     path_l = path.lower()
     want_snippet = include_snippet or path_l == "dockerfile" or path_l.endswith("/dockerfile")
+    parsed = parse_trivy_message(message or "")
+    help_uri = str(rule.get("help_uri") or "")
+    full_description = str(rule.get("full_description") or rule.get("description") or "")
+    sarif_classifications = list(inst.get("classifications") or [])
+    decision_context = build_decision_context(
+        path=path,
+        message=message or "",
+        help_uri=help_uri,
+        full_description=full_description,
+        sarif_classifications=sarif_classifications,
+        repo_root=repo_root,
+        fetch_advisory=fetch_advisory,
+    )
     return {
         "id": f"alert:{alert.get('number')}",
         "alert_number": alert.get("number"),
@@ -202,17 +232,19 @@ def normalize_alert(alert: dict[str, Any], repo_root: Path, *, include_snippet: 
         "start_line": start,
         "end_line": end,
         "message": (message or "")[:500],
-        "fixed_version": None,
-        "package": None,
+        "fixed_version": decision_context.get("fixed_version") or None,
+        "package": decision_context.get("package") or None,
         "auto_fix_type": None,
         "class": class_,
         "snippet": read_snippet(repo_root, path, start, end) if want_snippet else "",
         "html_url": alert.get("html_url"),
+        "help_uri": help_uri,
+        "decision_context": decision_context,
     }
 
 
 def slim_for_model(finding: dict[str, Any]) -> dict[str, Any]:
-    """Drop bulky fields for OpenRouter payloads."""
+    """Drop bulky fields for OpenRouter payloads; keep decision_context excerpt."""
     keep = (
         "id",
         "alert_number",
@@ -224,10 +256,19 @@ def slim_for_model(finding: dict[str, Any]) -> dict[str, Any]:
         "message",
         "class",
         "snippet",
+        "package",
+        "fixed_version",
+        "help_uri",
+        "decision_context",
     )
-    out = {k: finding.get(k) for k in keep}
-    if not out.get("snippet"):
-        out.pop("snippet", None)
+    out = {k: finding.get(k) for k in keep if finding.get(k) not in (None, "", [])}
+    ctx = out.get("decision_context")
+    if isinstance(ctx, dict):
+        # Cap advisory excerpt size in the model payload
+        slim_ctx = dict(ctx)
+        excerpt = str(slim_ctx.get("advisory_excerpt") or "")[:1800]
+        slim_ctx["advisory_excerpt"] = excerpt
+        out["decision_context"] = slim_ctx
     return out
 
 
@@ -416,10 +457,21 @@ def rescore_fp_candidates(
                 enriched.get("start_line"),
                 enriched.get("end_line"),
             )
-        # Carry bulk opinion for the gate model
+        # Carry bulk opinion for the gate model; refresh advisory for FP candidates
         bulk = next((i for i in triage_items if i.get("id") == fid), {})
         enriched["bulk_classification"] = bulk.get("classification")
         enriched["bulk_confidence"] = bulk.get("confidence")
+        enriched["decision_context"] = build_decision_context(
+            path=str(enriched.get("path") or ""),
+            message=str(enriched.get("message") or ""),
+            help_uri=str(enriched.get("help_uri") or ""),
+            full_description=str((enriched.get("decision_context") or {}).get("advisory_excerpt") or ""),
+            sarif_classifications=list(
+                (enriched.get("decision_context") or {}).get("sarif_classifications") or []
+            ),
+            repo_root=repo_root,
+            fetch_advisory=True,
+        )
         gate_findings.append(enriched)
 
     print(f"FP gate: re-scoring {len(gate_findings)} candidate(s) with {fp_model}")
@@ -451,6 +503,14 @@ def rescore_fp_candidates(
                 "patch_sketch",
                 "auto_fix_eligible",
                 "auto_fix_type",
+                "advisory_summary",
+                "exploit_conditions",
+                "public_exploit_known",
+                "user_input_required",
+                "mitigations",
+                "dependency_role",
+                "fix_risk",
+                "decision_rationale",
             ):
                 if key in g:
                     gated[key] = g[key]
@@ -472,43 +532,7 @@ def call_openrouter(
     purpose: str = "bulk",
 ) -> tuple[dict[str, Any], str]:
     """Call OpenRouter chat completions. Returns (triage_json, routed_model)."""
-    if purpose == "fp_gate":
-        system = (
-            "You are a senior application security engineer acting as a FALSE-POSITIVE gate. "
-            "These alerts were flagged as possible false positives by a cheaper bulk model. "
-            "Re-score carefully. Prefer needs_human when unsure. "
-            "Only mark likely_false_positive when evidence strongly supports non-actionable noise. "
-            "Never recommend dismissing secrets, malware, or clearly exploitable app bugs. "
-            "Never approve auto-dismiss for CRITICAL/HIGH. "
-            "Return ONLY valid JSON."
-        )
-    else:
-        system = (
-            "You are a senior application security engineer managing a Code Scanning backlog. "
-            "Classify each alert. Prefer needs_human when unsure. "
-            "Only mark likely_false_positive when evidence strongly supports it. "
-            "Never recommend dismissing secrets or malware. "
-            "Never auto-dismiss CRITICAL/HIGH. "
-            "Return ONLY valid JSON."
-        )
-    schema = {
-        "summary": "string",
-        "findings": [
-            {
-                "id": "alert:N",
-                "classification": "likely_true_positive|likely_false_positive|needs_human",
-                "confidence": 0.0,
-                "exploitability": "string",
-                "reachability": "string",
-                "business_impact": "string",
-                "remediation": "string",
-                "patch_sketch": "string",
-                "auto_fix_eligible": False,
-                "auto_fix_type": "dockerfile_user_root|dependency_fixed_version|base_image_update|null",
-                "dismiss_as_fp": False,
-            }
-        ],
-    }
+    system = fp_gate_system_prompt() if purpose == "fp_gate" else bulk_system_prompt()
     body: dict[str, Any] = {
         "model": model,
         "temperature": 0.1,
@@ -521,8 +545,9 @@ def call_openrouter(
                     {
                         "repository": env("GITHUB_REPOSITORY"),
                         "findings": findings,
-                        "response_schema": schema,
+                        "response_schema": response_schema(),
                         "rules": {
+                            **checklist_rules(),
                             "never_auto_fix_sources": sorted(NEVER_AUTO_FIX_SOURCES),
                             "auto_fix_allowlist": sorted(AUTO_FIX_ALLOWLIST),
                             "never_dismiss_critical_high": True,
@@ -583,6 +608,8 @@ def heuristic_review(findings: list[dict[str, Any]]) -> dict[str, Any]:
         path = (f.get("path") or "").lower()
         rule = (f.get("rule_id") or "").lower()
         blob = f"{title} {rule}"
+        ctx = f.get("decision_context") or {}
+        role = (ctx.get("dependency_role_hint") or "").lower()
         if ("dockerfile" in path or path.endswith("dockerfile")) and "user" in blob and "root" in blob:
             fix_type = "dockerfile_user_root"
             eligible = True
@@ -590,15 +617,39 @@ def heuristic_review(findings: list[dict[str, Any]]) -> dict[str, Any]:
             if any(k in blob for k in ("from", "base", "image", "vuln", "cve")):
                 fix_type = "base_image_update"
                 eligible = True
-        # Allowlisted mechanical matches get threshold-passing confidence; never FP-dismiss without AI
-        confidence = 0.8 if eligible else 0.55
+        if role == "image_toolchain":
+            classification = "true_positive_not_reachable"
+            confidence = 0.7
+            reachability = "image_toolchain"
+            rationale = (
+                "Heuristic: path indicates container image/toolchain dependency "
+                "(e.g. usr/local/lib/node_modules/npm/...), not app runtime reachability."
+            )
+        elif f.get("severity") in {"CRITICAL", "HIGH"}:
+            classification = "needs_human"
+            confidence = 0.55
+            reachability = "unknown"
+            rationale = "Heuristic fallback — model unavailable; HIGH/CRITICAL left for humans."
+        else:
+            classification = "likely_true_positive"
+            confidence = 0.8 if eligible else 0.55
+            reachability = "unknown"
+            rationale = "Heuristic fallback — model unavailable."
         items.append(
             {
                 "id": f["id"],
-                "classification": "needs_human" if f.get("severity") in {"CRITICAL", "HIGH"} else "likely_true_positive",
+                "classification": classification,
                 "confidence": confidence,
+                "advisory_summary": (ctx.get("advisory_excerpt") or f.get("title") or "")[:400],
+                "exploit_conditions": "unknown (heuristic)",
+                "public_exploit_known": "unknown",
+                "reachability": reachability,
+                "user_input_required": "unknown",
+                "mitigations": "",
+                "dependency_role": role or "transitive_unknown",
+                "fix_risk": "unknown",
+                "decision_rationale": rationale,
                 "exploitability": "Heuristic only — model unavailable.",
-                "reachability": "Not analyzed (fallback).",
                 "business_impact": f.get("severity"),
                 "remediation": f.get("message") or f.get("title") or "",
                 "patch_sketch": "FROM node:20-bookworm-slim" if fix_type == "base_image_update" else "",
@@ -608,6 +659,40 @@ def heuristic_review(findings: list[dict[str, Any]]) -> dict[str, Any]:
             }
         )
     return {"summary": f"Heuristic review of {len(findings)} alert(s).", "findings": items, "fallback": True}
+
+
+def upsert_triage_digest_issue(body: str) -> str | None:
+    """Create or update the rolling Security alert triage digest issue."""
+    repo = env("GITHUB_REPOSITORY")
+    if not repo or not env("GITHUB_TOKEN"):
+        return None
+    owner, name = repo.split("/", 1)
+    title = "Security alert triage digest"
+    try:
+        # Ensure label exists (ignore failures)
+        try:
+            gh_api(
+                "POST",
+                f"/repos/{owner}/{name}/labels",
+                {"name": "security-triage", "color": "5319E7", "description": "Alert manager triage digests"},
+            )
+        except RuntimeError:
+            pass
+        q = urllib.parse.urlencode(
+            {"state": "open", "labels": "security-triage", "per_page": 20}
+        )
+        issues = gh_api("GET", f"/repos/{owner}/{name}/issues?{q}") or []
+        existing = next((i for i in issues if i.get("title") == title and "pull_request" not in i), None)
+        payload = {"title": title, "body": body[:65000], "labels": ["security-triage"]}
+        if existing:
+            number = int(existing["number"])
+            gh_api("PATCH", f"/repos/{owner}/{name}/issues/{number}", payload)
+            return str(existing.get("html_url") or "")
+        created = gh_api("POST", f"/repos/{owner}/{name}/issues", payload)
+        return str((created or {}).get("html_url") or "")
+    except Exception as exc:  # noqa: BLE001
+        print(f"::warning::Failed to upsert triage digest issue: {exc}")
+        return None
 
 
 def main() -> int:
@@ -666,6 +751,7 @@ def main() -> int:
     dismissed_fps = 0
     fix_urls: list[str] = []
     triage: dict[str, Any] = {"summary": "No AI review", "findings": []}
+    findings_by_id: dict[str, dict[str, Any]] = {}
 
     if ai_review and others:
         # Prefer allowlisted fix targets first, then MEDIUM, then HIGH/CRITICAL
@@ -690,7 +776,11 @@ def main() -> int:
         else:
             print(f"AI review scope: ALL {len(others_sorted)} non-LOW open alert(s)")
 
-        findings = [normalize_alert(a, repo_root, include_snippet=False) for a in others_sorted]
+        # Bulk pass uses SARIF text; advisory HTTP fetch reserved for FP-gate candidates
+        findings = [
+            normalize_alert(a, repo_root, include_snippet=False, fetch_advisory=False)
+            for a in others_sorted
+        ]
         findings_by_id = {f["id"]: f for f in findings}
 
         # Tier 1: bulk classify (OpenRouter Auto @ medium by default)
@@ -743,24 +833,24 @@ def main() -> int:
         )
 
         for item in triage.get("findings") or []:
+            item["classification"] = normalize_classification(item.get("classification"))
             base = findings_by_id.get(item.get("id") or "", {})
             sev = (base.get("severity") or "").upper()
             secretish = base.get("class") == "secret" or is_secretish(
                 {"rule": {"id": base.get("rule_id"), "description": base.get("title")}, "tool": {"name": base.get("source")}}
             )
 
-            # Dismiss only after Opus/fp-gate confirmation (MEDIUM + non-secret + high conf)
+            # Dismiss only MEDIUM likely_false_positive after FP gate (never not-reachable / fix-breaks)
             gate_ok = (not fp_model) or bool(item.get("fp_gate_model"))
-            want_fp = bool(item.get("dismiss_as_fp")) or item.get("classification") == "likely_false_positive"
             conf = float(item.get("confidence") or 0)
-            can_dismiss_fp = (
-                gate_ok
-                and want_fp
-                and conf >= fp_confidence
-                and sev == "MEDIUM"
-                and not secretish
-            )
-            if can_dismiss_fp:
+            if can_auto_dismiss(
+                classification=item.get("classification") or "",
+                confidence=conf,
+                severity=sev,
+                secretish=secretish,
+                fp_confidence=fp_confidence,
+                gate_confirmed=gate_ok,
+            ):
                 number = base.get("alert_number")
                 if number is not None:
                     try:
@@ -770,7 +860,8 @@ def main() -> int:
                             (
                                 f"AI alert-manager FP gate ({fp_model}): likely_false_positive "
                                 f"(confidence={conf:.2f}; bulk={item.get('bulk_classification')}/"
-                                f"{item.get('bulk_confidence')}). {item.get('remediation') or ''}"
+                                f"{item.get('bulk_confidence')}). "
+                                f"{item.get('decision_rationale') or item.get('remediation') or ''}"
                             ),
                         )
                         dismissed_fps += 1
@@ -778,7 +869,9 @@ def main() -> int:
                     except Exception as exc:  # noqa: BLE001
                         print(f"::warning::Failed to dismiss FP alert #{number}: {exc}")
 
-            # Enforce fix policy (bulk allowlist still applies; gate does not unlock secrets)
+            # Enforce fix policy — only for likely_true_positive allowlisted mechanical fixes
+            if item.get("classification") != "likely_true_positive":
+                item["auto_fix_eligible"] = False
             if secretish or (base.get("source") or "") in NEVER_AUTO_FIX_SOURCES:
                 item["auto_fix_eligible"] = False
                 item["auto_fix_type"] = None
@@ -819,9 +912,31 @@ def main() -> int:
     append_summary("")
     append_summary(triage.get("summary") or "")
     append_summary("")
+
+    report_md = build_decision_report_md(
+        triage.get("findings") or [],
+        findings_by_id,
+        title="Security decision report (alert manager)",
+        run_url=env("GITHUB_RUN_URL"),
+        max_cards=30,
+    )
+    append_summary(report_md)
+    append_summary("")
     append_summary(
         "_Alert manager is backlog hygiene. Security Gate remains the merge authority._"
     )
+
+    issue_body = (
+        f"Rolling digest from alert-manager.\n\n"
+        f"- LOW dismissed (policy): **{dismissed_lows}**\n"
+        f"- AI FP dismissed: **{dismissed_fps}**\n"
+        f"- Run: {env('GITHUB_RUN_URL')}\n\n"
+        f"{report_md}\n"
+    )
+    issue_url = upsert_triage_digest_issue(issue_body)
+    if issue_url:
+        append_summary(f"- Triage digest issue: {issue_url}")
+        print(f"Updated triage digest issue: {issue_url}")
 
     Path("alert-manager-result.json").write_text(
         json.dumps(
@@ -830,6 +945,8 @@ def main() -> int:
                 "dismissed_fps": dismissed_fps,
                 "fix_pr_urls": fix_urls,
                 "triage": triage,
+                "decision_report_markdown": report_md,
+                "digest_issue_url": issue_url,
             },
             indent=2,
         ),

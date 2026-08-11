@@ -5,10 +5,20 @@ Backlog hygiene for **open GitHub Code Scanning alerts**. Complements PR AI tria
 ## Pipeline
 
 1. **Rule 1 (policy):** dismiss all open **LOW** / `note` alerts as `won't fix`
-2. **Tier 1 bulk AI:** classify remaining alerts via `openrouter/auto` (`cost-tier: medium` by default)
-3. **Tier 2 FP gate:** re-score bulk `likely_false_positive` candidates with `anthropic/claude-opus-5`
-4. **FP dismiss:** dismiss only after the FP gate confirms `likely_false_positive` with confidence ≥ `0.85` and severity **MEDIUM** (never CRITICAL/HIGH, never secrets)
-5. **Draft fix PRs:** allowlisted mechanical fixes from bulk tier (`dockerfile_user_root`, `dependency_fixed_version`, `base_image_update`)
+2. **Enrich:** package/version, path-based dependency role, SARIF advisory text (`help_uri` fetched for FP-gate candidates)
+3. **Tier 1 bulk AI:** classify via `openrouter/auto` (`cost-tier: medium`) using an in-action **exploitability checklist**
+4. **Tier 2 FP gate:** re-score bulk `likely_false_positive` candidates with `anthropic/claude-opus-5`
+5. **FP dismiss:** only after the FP gate confirms `likely_false_positive` with confidence ≥ `0.85` and severity **MEDIUM** (never CRITICAL/HIGH, never secrets, never “not reachable”)
+6. **Report:** markdown decision report → Actions step summary + rolling GitHub Issue `Security alert triage digest`
+7. **Draft fix PRs:** allowlisted mechanical fixes only for `likely_true_positive`
+
+## Exploitability checklist (in-action)
+
+Classifications: `likely_true_positive` | `true_positive_not_reachable` | `true_positive_fix_breaks` | `likely_false_positive` | `needs_human`
+
+Each finding must address: advisory summary, exploit conditions, public exploit known, reachability, user-input requirement, mitigations, dependency role, fix risk, decision rationale.
+
+**Example — alert [#3195](https://github.com/steel-mountain-ng/vulnerable-app/security/code-scanning/3195):** Trivy image CVE `brace-expansion` / `CVE-2026-69152` under `usr/local/lib/node_modules/npm/node_modules/...` is a **real** CVE in the Node image npm toolchain. Correct class is usually `true_positive_not_reachable` (not app-reachable), **not** `likely_false_positive`. It must not be auto-dismissed as a false positive.
 
 ## Dismiss comments (audit trail)
 
@@ -74,6 +84,7 @@ with:
 
 - Action: [`actions/alert-manager`](../actions/alert-manager/)
 - Shared fixes: [`actions/shared/fix_helpers.py`](../actions/shared/fix_helpers.py) (copied into each action directory for composite packaging)
+- Checklist module: [`actions/shared/vuln_checklist.py`](../actions/shared/vuln_checklist.py) (copied into alert-manager + ai-triage)
 - Workflow: [`reusable-alert-manager.yml`](../.github/workflows/reusable-alert-manager.yml)
 
 ## Interview one-liner
