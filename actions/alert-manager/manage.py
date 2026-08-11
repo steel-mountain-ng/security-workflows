@@ -366,14 +366,25 @@ def main() -> int:
     triage: dict[str, Any] = {"summary": "No AI review", "findings": []}
 
     if ai_review and others:
-        findings = [normalize_alert(a, repo_root) for a in others]
-        # Prefer MEDIUM for AI dismiss consideration; keep CRITICAL/HIGH for fix suggestions
-        findings.sort(
-            key=lambda f: (
-                0 if f["severity"] == "MEDIUM" else 1 if f["severity"] in {"HIGH", "CRITICAL"} else 2,
-                f.get("rule_id") or "",
+        # Cap before expensive snippet reads; prefer fixable / MEDIUM alerts in the batch
+        def _batch_rank(alert: dict[str, Any]) -> tuple[int, int, str]:
+            path = str(((alert.get("most_recent_instance") or {}).get("location") or {}).get("path") or "").lower()
+            rule = str((alert.get("rule") or {}).get("id") or "").lower()
+            title = str((alert.get("rule") or {}).get("description") or "").lower()
+            sev = alert_severity(alert)
+            blob = f"{path} {rule} {title}"
+            fixable = int(
+                path.endswith("dockerfile")
+                or path == "dockerfile"
+                or ("user" in blob and "root" in blob)
+                or any(k in blob for k in ("base image", "from image", "package.json"))
             )
-        )
+            sev_rank = 0 if sev == "medium" else 1 if sev in {"high", "critical", "error"} else 2
+            # Lower tuple sorts first: fixable MEDIUM, then fixable HIGH, then other MEDIUM, etc.
+            return (0 if fixable else 1, sev_rank, rule)
+
+        others_sorted = sorted(others, key=_batch_rank)[:max_alerts]
+        findings = [normalize_alert(a, repo_root) for a in others_sorted]
         findings = findings[:max_alerts]
         findings_by_id = {f["id"]: f for f in findings}
 
