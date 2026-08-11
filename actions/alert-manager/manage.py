@@ -424,10 +424,21 @@ def call_openrouter(
     with urllib.request.urlopen(req, timeout=180) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     routed = str(payload.get("model") or model)
-    content = payload["choices"][0]["message"]["content"]
+    choices = payload.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"OpenRouter returned no choices (model={routed}): {json.dumps(payload)[:500]}")
+    message = (choices[0] or {}).get("message") or {}
+    content = message.get("content")
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-    content = content.strip()
+    if content is None:
+        # Some routed models return tool/refusal payloads without text content
+        raise RuntimeError(
+            f"OpenRouter empty content (model={routed}): {json.dumps(message)[:500]}"
+        )
+    content = str(content).strip()
+    if not content:
+        raise RuntimeError(f"OpenRouter blank content (model={routed})")
     if content.startswith("```"):
         content = re.sub(r"^```(?:json)?\s*", "", content)
         content = re.sub(r"\s*```$", "", content)
