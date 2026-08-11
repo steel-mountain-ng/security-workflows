@@ -366,27 +366,39 @@ def main() -> int:
     triage: dict[str, Any] = {"summary": "No AI review", "findings": []}
 
     if ai_review and others:
-        # Cap before expensive snippet reads; prefer fixable / MEDIUM alerts in the batch
+        # Cap before expensive snippet reads; prefer allowlisted fix targets (not image FS noise)
         def _batch_rank(alert: dict[str, Any]) -> tuple[int, int, str]:
             path = str(((alert.get("most_recent_instance") or {}).get("location") or {}).get("path") or "").lower()
             rule = str((alert.get("rule") or {}).get("id") or "").lower()
             title = str((alert.get("rule") or {}).get("description") or "").lower()
             sev = alert_severity(alert)
-            blob = f"{path} {rule} {title}"
+            is_dockerfile = path == "dockerfile" or path.endswith("/dockerfile")
+            is_app_manifest = path in {"package.json", "package-lock.json"} or (
+                path.endswith("package.json")
+                and "/node_modules/" not in path
+                and not path.startswith("usr/")
+            )
+            blob = f"{rule} {title}"
             fixable = int(
-                path.endswith("dockerfile")
-                or path == "dockerfile"
-                or ("user" in blob and "root" in blob)
-                or any(k in blob for k in ("base image", "from image", "package.json"))
+                is_dockerfile
+                or is_app_manifest
+                or (is_dockerfile and "user" in blob and "root" in blob)
             )
             sev_rank = 0 if sev == "medium" else 1 if sev in {"high", "critical", "error"} else 2
-            # Lower tuple sorts first: fixable MEDIUM, then fixable HIGH, then other MEDIUM, etc.
+            # Lower tuple sorts first: Dockerfile/app manifests, then by severity
             return (0 if fixable else 1, sev_rank, rule)
 
         others_sorted = sorted(others, key=_batch_rank)[:max_alerts]
         findings = [normalize_alert(a, repo_root) for a in others_sorted]
         findings = findings[:max_alerts]
         findings_by_id = {f["id"]: f for f in findings}
+
+        print(
+            "AI batch sample: "
+            + ", ".join(
+                f"#{f.get('alert_number')}:{f.get('rule_id')}:{f.get('path')}" for f in findings[:8]
+            )
+        )
 
         if api_key:
             try:
@@ -398,6 +410,9 @@ def main() -> int:
         else:
             print("::warning::OPENROUTER_API_KEY missing; heuristic review only")
             triage = heuristic_review(findings)
+
+        eligible_pre = sum(1 for i in (triage.get("findings") or []) if i.get("auto_fix_eligible"))
+        print(f"Review findings={len(triage.get('findings') or [])} eligible_fixes={eligible_pre} fallback={bool(triage.get('fallback'))}")
 
         for item in triage.get("findings") or []:
             base = findings_by_id.get(item.get("id") or "", {})

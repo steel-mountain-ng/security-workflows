@@ -151,6 +151,7 @@ def open_draft_fix_prs(
             continue
 
         if not changed:
+            print(f"Skipping {fix_type}: no file changes applied")
             continue
 
         seen_fix_types.add(fix_type)
@@ -162,6 +163,9 @@ def open_draft_fix_prs(
                 cwd=repo_root,
                 check=True,
             )
+            # Ensure Actions token can push (checkout credential helper is not always enough)
+            remote = f"https://x-access-token:{token}@github.com/{repo}.git"
+            subprocess.run(["git", "remote", "set-url", "origin", remote], cwd=repo_root, check=True)
             subprocess.run(["git", "checkout", "-B", branch], cwd=repo_root, check=True)
             subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
             subprocess.run(["git", "commit", "-m", title], cwd=repo_root, check=True)
@@ -169,7 +173,6 @@ def open_draft_fix_prs(
                 ["git", "push", "-u", "origin", branch, "--force"],
                 cwd=repo_root,
                 check=True,
-                env={**os.environ, "GITHUB_TOKEN": token},
             )
             body = (
                 f"Draft fix proposed by security-workflows alert/AI triage (advisory).\n\n"
@@ -202,6 +205,11 @@ def open_draft_fix_prs(
             if url:
                 urls.append(url)
         except subprocess.CalledProcessError as exc:
+            stderr = ""
+            if exc.stderr:
+                stderr = exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode("utf-8", "replace")
+            print(f"::warning::Failed to open draft fix PR for {fix_type}: {exc} {stderr[:500]}")
+        except Exception as exc:  # noqa: BLE001
             print(f"::warning::Failed to open draft fix PR for {fix_type}: {exc}")
         finally:
             default_ref = env("GITHUB_REF_NAME") or "main"
