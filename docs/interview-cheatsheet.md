@@ -40,6 +40,7 @@ jobs:
 2. Orchestrator `Security Gate` job runs `if: always()`, inspects `needs.*.result`, and fails if any enabled scanner is not `success`
 3. Branch protection requires **Security Gate** so merges/deploys cannot skip a red check
 4. **AI triage** runs after the gate on PRs only — advisory comments / draft fixes; never in the gate `needs` list
+5. **Alert manager** (schedule/dispatch) auto-dismisses **LOW** Code Scanning alerts by policy, may AI-dismiss MEDIUM FPs, may open draft fix PRs — backlog hygiene only
 
 Interview talking point: *“Policy is code (gates); judgment is assisted (AI); humans own residual risk.”*
 

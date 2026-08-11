@@ -1,0 +1,90 @@
+name: 'Code Scanning Alert Manager'
+description: 'Auto-dismiss LOW Code Scanning alerts, AI FP dismiss, optional draft fix PRs'
+author: 'steel-mountain-ng'
+
+inputs:
+  repo-root:
+    description: Checkout root for code context / fixes
+    required: false
+    default: '.'
+  openrouter-api-key:
+    description: OpenRouter API key (optional; LOW dismiss still runs)
+    required: false
+    default: ''
+  model:
+    description: OpenRouter model id
+    required: false
+    default: 'openai/gpt-4o-mini'
+  dismiss-lows:
+    description: Auto-dismiss all open LOW / note severity alerts
+    required: false
+    default: 'true'
+  ai-review:
+    description: Run AI review for remaining open alerts
+    required: false
+    default: 'true'
+  open-fix-prs:
+    description: Open draft fix PRs for allowlisted remediations
+    required: false
+    default: 'false'
+  max-alerts:
+    description: Max non-LOW alerts to send to the model
+    required: false
+    default: '40'
+  fp-confidence:
+    description: Minimum confidence to dismiss as false positive
+    required: false
+    default: '0.85'
+  fix-confidence:
+    description: Minimum confidence to open a draft fix PR
+    required: false
+    default: '0.7'
+  github-token:
+    description: Token with security-events:write (and contents/PR for fixes)
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  dismissed-lows:
+    description: Count of LOW alerts dismissed
+    value: ${{ steps.run.outputs.dismissed-lows }}
+  dismissed-fps:
+    description: Count of AI false-positive dismissals
+    value: ${{ steps.run.outputs.dismissed-fps }}
+  fix-pr-urls:
+    description: Comma-separated draft fix PR URLs
+    value: ${{ steps.run.outputs.fix-pr-urls }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      shell: bash
+      run: python -m pip install --upgrade pip requests
+
+    - name: Run alert manager
+      id: run
+      shell: bash
+      env:
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+        AI_MODEL: ${{ inputs.model }}
+        DISMISS_LOWS: ${{ inputs.dismiss-lows }}
+        AI_REVIEW: ${{ inputs.ai-review }}
+        AI_OPEN_FIX_PRS: ${{ inputs.open-fix-prs }}
+        AI_MAX_ALERTS: ${{ inputs.max-alerts }}
+        AI_FP_CONFIDENCE: ${{ inputs.fp-confidence }}
+        AI_FIX_CONFIDENCE: ${{ inputs.fix-confidence }}
+        AI_REPO_ROOT: ${{ inputs.repo-root }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+        GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        GITHUB_SERVER_URL: ${{ github.server_url }}
+      run: python "${{ github.action_path }}/manage.py"

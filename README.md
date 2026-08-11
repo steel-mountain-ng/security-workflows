@@ -13,6 +13,7 @@ Reusable GitHub Actions security workflows for the `steel-mountain-ng` organizat
 | Container image | Docker build (local) + Trivy (`image`) | Fail on `CRITICAL`/`HIGH` |
 | Supply chain | [RoguePkg](https://github.com/radioactivetobi/roguepkg) | Fail on malware |
 | AI triage (advisory) | OpenRouter | **Never** changes Security Gate; PR comments + optional draft fix PRs |
+| Alert manager (backlog) | Code Scanning API + OpenRouter | Auto-dismiss LOWs; AI FP dismiss (MEDIUM only); draft fix PRs |
 
 The orchestrator ends with a single **Security Gate** job you can require in branch protection.
 
@@ -63,8 +64,9 @@ jobs:
 | [`reusable-trivy-image.yml`](.github/workflows/reusable-trivy-image.yml) | Build + image scan (no registry push) |
 | [`reusable-roguepkg.yml`](.github/workflows/reusable-roguepkg.yml) | Malicious npm package detection |
 | [`reusable-ai-triage.yml`](.github/workflows/reusable-ai-triage.yml) | OpenRouter triage + PR comment |
+| [`reusable-alert-manager.yml`](.github/workflows/reusable-alert-manager.yml) | Dismiss LOWs / AI FP / draft fixes |
 
-Composite action: [`actions/ai-triage`](actions/ai-triage/)
+Composite actions: [`actions/ai-triage`](actions/ai-triage/), [`actions/alert-manager`](actions/alert-manager/)
 
 ### Common inputs
 
@@ -86,9 +88,10 @@ permissions:
   pull-requests: write      # AI sticky comments
 ```
 
-## AI triage
+## AI triage + alert manager
 
-See [`docs/ai-triage.md`](docs/ai-triage.md) for OpenRouter setup, allowlists, and the GitHub App evolution path.
+- PR assist: [`docs/ai-triage.md`](docs/ai-triage.md)
+- Security-tab backlog: [`docs/alert-manager.md`](docs/alert-manager.md) (auto-dismiss **all LOW** alerts first)
 
 **Policy is code (Security Gate). Judgment is assisted (AI). Humans own residual risk.**
 

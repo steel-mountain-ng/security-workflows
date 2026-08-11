@@ -1,0 +1,76 @@
+name: Reusable Alert Manager
+
+on:
+  workflow_call:
+    inputs:
+      dismiss-lows:
+        description: Auto-dismiss all open LOW / note Code Scanning alerts
+        type: boolean
+        required: false
+        default: true
+      ai-review:
+        description: AI review remaining open alerts for FP dismiss / fixes
+        type: boolean
+        required: false
+        default: true
+      open-fix-prs:
+        description: Open draft fix PRs for allowlisted remediations
+        type: boolean
+        required: false
+        default: false
+      model:
+        description: OpenRouter model id
+        type: string
+        required: false
+        default: 'openai/gpt-4o-mini'
+      max-alerts:
+        description: Max non-LOW alerts sent to the model
+        type: string
+        required: false
+        default: '40'
+      fp-confidence:
+        description: Minimum confidence to dismiss as false positive
+        type: string
+        required: false
+        default: '0.85'
+      fix-confidence:
+        description: Minimum confidence to open a draft fix PR
+        type: string
+        required: false
+        default: '0.7'
+    secrets:
+      OPENROUTER_API_KEY:
+        description: OpenRouter API key
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  alert-manager:
+    name: Alert Manager
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+      pull-requests: write
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Manage Code Scanning alerts
+        uses: steel-mountain-ng/security-workflows/actions/alert-manager@v1
+        with:
+          repo-root: .
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          model: ${{ inputs.model }}
+          dismiss-lows: ${{ inputs.dismiss-lows }}
+          ai-review: ${{ inputs.ai-review }}
+          open-fix-prs: ${{ inputs.open-fix-prs }}
+          max-alerts: ${{ inputs.max-alerts }}
+          fp-confidence: ${{ inputs.fp-confidence }}
+          fix-confidence: ${{ inputs.fix-confidence }}
+          github-token: ${{ github.token }}

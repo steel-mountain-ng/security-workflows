@@ -91,9 +91,19 @@ on:
         type: boolean
         required: false
         default: false
+      run-alert-manager:
+        description: Run Code Scanning alert manager (LOW dismiss / AI FP). Prefer schedule/dispatch, not PR CI.
+        type: boolean
+        required: false
+        default: false
+      alert-manager-open-fix-prs:
+        description: When alert manager runs, open draft fix PRs for allowlisted remediations
+        type: boolean
+        required: false
+        default: false
     secrets:
       OPENROUTER_API_KEY:
-        description: OpenRouter API key for AI triage
+        description: OpenRouter API key for AI triage / alert manager
         required: false
 
 # Nested reusable workflows inherit the *caller* workflow token scope.
@@ -257,3 +267,18 @@ jobs:
       max-findings: ${{ inputs.ai-max-findings }}
       open-fix-prs: ${{ inputs.ai-open-fix-prs }}
       gate-status: ${{ needs.security-gate.result }}
+
+  # Backlog hygiene for Code Scanning alerts. Default off in PR CI.
+  alert-manager:
+    name: Alert Manager
+    needs:
+      - security-gate
+    if: ${{ always() && inputs.run-alert-manager }}
+    uses: steel-mountain-ng/security-workflows/.github/workflows/reusable-alert-manager.yml@v1
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    with:
+      dismiss-lows: true
+      ai-review: true
+      open-fix-prs: ${{ inputs.alert-manager-open-fix-prs }}
+      model: ${{ inputs.ai-model }}

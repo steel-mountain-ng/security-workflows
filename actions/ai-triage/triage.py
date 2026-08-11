@@ -13,6 +13,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from fix_helpers import (
+    AUTO_FIX_ALLOWLIST,
+    NEVER_AUTO_FIX_SOURCES,
+    open_draft_fix_prs,
+)
+
 SEVERITY_RANK = {
     "CRITICAL": 0,
     "HIGH": 1,
@@ -24,14 +30,6 @@ SEVERITY_RANK = {
     "UNKNOWN": 5,
     "INFO": 5,
 }
-
-AUTO_FIX_ALLOWLIST = {
-    "dockerfile_user_root",
-    "dependency_fixed_version",
-    "base_image_update",
-}
-
-NEVER_AUTO_FIX_SOURCES = {"trivy-secrets", "roguepkg", "secret"}
 
 
 def env(name: str, default: str = "") -> str:
@@ -527,150 +525,6 @@ def post_pr_comment(body: str) -> None:
         print(f"Created PR comment on #{pr}")
     except (subprocess.CalledProcessError, FileNotFoundError, urllib.error.URLError, TimeoutError) as exc:
         print(f"::warning::Failed to post PR comment: {exc}")
-
-
-def apply_dockerfile_user_root(repo_root: Path) -> bool:
-    dockerfile = repo_root / "Dockerfile"
-    if not dockerfile.is_file():
-        return False
-    text = dockerfile.read_text(encoding="utf-8")
-    if re.search(r"(?m)^USER\s+appuser\s*$", text):
-        return False
-    # Ensure appuser exists; replace USER root or append USER appuser
-    if re.search(r"(?m)^USER\s+root\s*$", text):
-        new_text = re.sub(r"(?m)^USER\s+root\s*$", "USER appuser", text)
-    else:
-        new_text = text.rstrip() + "\n\n# AI triage draft fix: run as non-root\nUSER appuser\n"
-    if "useradd" not in new_text and "adduser" not in new_text:
-        return False
-    dockerfile.write_text(new_text, encoding="utf-8")
-    return True
-
-
-def apply_dependency_bump(repo_root: Path, package: str, fixed_version: str) -> bool:
-    pkg_json = repo_root / "package.json"
-    if not pkg_json.is_file() or not package or not fixed_version:
-        return False
-    try:
-        data = json.loads(pkg_json.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return False
-    changed = False
-    for section in ("dependencies", "devDependencies", "optionalDependencies"):
-        deps = data.get(section) or {}
-        if package in deps:
-            deps[package] = fixed_version
-            data[section] = deps
-            changed = True
-    if changed:
-        pkg_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return changed
-
-
-def open_draft_fix_prs(
-    triage: dict[str, Any],
-    findings_by_id: dict[str, dict[str, Any]],
-    repo_root: Path,
-    confidence_threshold: float,
-) -> list[str]:
-    urls: list[str] = []
-    token = env("GITHUB_TOKEN")
-    repo = env("GITHUB_REPOSITORY")
-    if not token or not repo:
-        return urls
-
-    for item in triage.get("findings") or []:
-        conf = float(item.get("confidence") or 0)
-        if conf < confidence_threshold:
-            continue
-        if not item.get("auto_fix_eligible"):
-            continue
-        fix_type = item.get("auto_fix_type")
-        if fix_type not in AUTO_FIX_ALLOWLIST:
-            continue
-        base = findings_by_id.get(item.get("id") or "", {})
-        source = base.get("source") or ""
-        if source in NEVER_AUTO_FIX_SOURCES or base.get("class") == "secret":
-            continue
-
-        # Reset workspace dirty state between fixes
-        subprocess.run(["git", "checkout", "--", "."], cwd=repo_root, check=False, capture_output=True)
-        subprocess.run(["git", "clean", "-fd"], cwd=repo_root, check=False, capture_output=True)
-
-        changed = False
-        branch_suffix = re.sub(r"[^a-zA-Z0-9._-]+", "-", (base.get("rule_id") or fix_type))[:40]
-        if fix_type == "dockerfile_user_root":
-            changed = apply_dockerfile_user_root(repo_root)
-            title = "fix(security): run container as non-root user"
-        elif fix_type == "dependency_fixed_version":
-            changed = apply_dependency_bump(
-                repo_root, base.get("package") or "", base.get("fixed_version") or ""
-            )
-            title = f"fix(security): bump {base.get('package')} to {base.get('fixed_version')}"
-        elif fix_type == "base_image_update":
-            # Conservative: only comment suggestion via patch_sketch; skip auto PR for image tags
-            continue
-        else:
-            continue
-
-        if not changed:
-            continue
-
-        branch = f"ai-triage/{branch_suffix}-{env('GITHUB_RUN_ID', 'local')}"
-        try:
-            subprocess.run(["git", "config", "user.name", "security-ai-triage"], cwd=repo_root, check=True)
-            subprocess.run(
-                ["git", "config", "user.email", "security-ai-triage@users.noreply.github.com"],
-                cwd=repo_root,
-                check=True,
-            )
-            subprocess.run(["git", "checkout", "-B", branch], cwd=repo_root, check=True)
-            subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
-            subprocess.run(
-                ["git", "commit", "-m", title],
-                cwd=repo_root,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "push", "-u", "origin", branch, "--force"],
-                cwd=repo_root,
-                check=True,
-                env={**os.environ, "GITHUB_TOKEN": token},
-            )
-            body = (
-                f"Draft fix proposed by AI triage (advisory).\n\n"
-                f"- Finding: `{base.get('rule_id')}`\n"
-                f"- Classification: `{item.get('classification')}`\n"
-                f"- Confidence: `{conf}`\n\n"
-                f"Security Gate remains authoritative. Review carefully before merging.\n"
-            )
-            pr = subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "create",
-                    "--draft",
-                    "--title",
-                    title,
-                    "--body",
-                    body,
-                    "--head",
-                    branch,
-                ],
-                cwd=repo_root,
-                check=True,
-                capture_output=True,
-                text=True,
-                env={**os.environ, "GH_TOKEN": token},
-            )
-            url = (pr.stdout or "").strip()
-            if url:
-                urls.append(url)
-        except subprocess.CalledProcessError as exc:
-            print(f"::warning::Failed to open draft fix PR for {fix_type}: {exc}")
-        finally:
-            subprocess.run(["git", "checkout", env("GITHUB_REF_NAME", "main")], cwd=repo_root, check=False)
-    return urls
 
 
 def main() -> int:

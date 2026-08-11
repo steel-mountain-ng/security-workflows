@@ -20,7 +20,7 @@ Advisory layer on top of the hard **Security Gate**. It explains findings and ca
 | --- | --- |
 | Security Gate | Deterministic; AI job is `continue-on-error` and **not** in `needs` of the gate |
 | Secrets / RoguePkg | Comment only — never auto-fix |
-| Auto-fix allowlist | Dockerfile non-root user; dependency bump when Trivy provides `fixedVersion` |
+| Auto-fix allowlist | Dockerfile non-root user; dependency bump when Trivy provides `fixedVersion`; base image `FROM` upgrade |
 | Confidence | Draft PRs only when confidence ≥ threshold (default `0.7`) |
 | Missing API key | Heuristic triage still comments so demos work offline |
 
@@ -68,6 +68,10 @@ AI triage runs only on `pull_request` events.
 - Workflow: [`.github/workflows/reusable-ai-triage.yml`](../.github/workflows/reusable-ai-triage.yml)
 - Composite action: [`actions/ai-triage`](../actions/ai-triage/)
 - Pure function boundary: `actions/ai-triage/triage.py` (`findings → report`) so a future GitHub App can reuse the same logic on webhooks
+
+## Related: alert manager
+
+For **open Code Scanning alerts** (Security tab backlog), see [`alert-manager.md`](alert-manager.md): auto-dismiss LOWs, AI FP dismiss, draft fix PRs.
 
 ## Evolution: GitHub App (phase 2)
 

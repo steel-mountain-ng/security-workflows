@@ -30,5 +30,7 @@ jobs:
       run-ai-triage: true
       ai-model: openai/gpt-4o-mini
       ai-max-findings: '25'
-      # Draft fix PRs for allowlisted items only (Dockerfile USER, dep bumps)
+      # Draft fix PRs for allowlisted items only (Dockerfile USER, dep bumps, base image)
       ai-open-fix-prs: false
+      # Prefer dedicated alert-manager.yml schedule/dispatch for LOW dismiss
+      run-alert-manager: false
