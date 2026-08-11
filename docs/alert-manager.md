@@ -5,16 +5,17 @@ Backlog hygiene for **open GitHub Code Scanning alerts**. Complements PR AI tria
 ## Pipeline
 
 1. **Rule 1 (policy):** dismiss all open **LOW** / `note` alerts as `won't fix`
-2. **AI review:** classify remaining alerts via OpenRouter
-3. **FP dismiss:** dismiss `likely_false_positive` only when confidence ≥ `0.85` and severity is **MEDIUM** (never CRITICAL/HIGH, never secrets)
-4. **Draft fix PRs:** allowlisted mechanical fixes (`dockerfile_user_root`, `dependency_fixed_version`, `base_image_update`)
+2. **Tier 1 bulk AI:** classify remaining alerts via `openrouter/auto` (`cost-tier: medium` by default)
+3. **Tier 2 FP gate:** re-score bulk `likely_false_positive` candidates with `anthropic/claude-opus-5`
+4. **FP dismiss:** dismiss only after the FP gate confirms `likely_false_positive` with confidence ≥ `0.85` and severity **MEDIUM** (never CRITICAL/HIGH, never secrets)
+5. **Draft fix PRs:** allowlisted mechanical fixes from bulk tier (`dockerfile_user_root`, `dependency_fixed_version`, `base_image_update`)
 
 ## Dismiss comments (audit trail)
 
 | Action | `dismissed_reason` | Comment |
 | --- | --- | --- |
 | LOW policy | `won't fix` | `Org policy: LOW severity auto-dismissed by security-workflows alert manager` |
-| AI false positive | `false positive` | Includes confidence + short remediation note |
+| AI false positive | `false positive` | FP gate model + confidence + bulk opinion + remediation note |
 
 ## Guardrails
 
@@ -50,11 +51,16 @@ jobs:
       dismiss-lows: true
       ai-review: true
       open-fix-prs: true
-      model: openrouter/auto   # Auto Router; cost-tier: low|medium|high|xhigh|max
-      max-alerts: '0'          # 0 = all open non-LOW alerts
+      model: openrouter/auto              # Tier 1 bulk
+      cost-tier: medium
+      fp-model: anthropic/claude-opus-5   # Tier 2 FP dismiss gate
+      max-alerts: '0'                     # 0 = all open non-LOW alerts
       batch-size: '40'
-      concurrency: '8'         # parallel AI agent workers
+      concurrency: '8'
 ```
+
+See also [`docs/confidence-benchmark-report.md`](confidence-benchmark-report.md) for model cost/accuracy rationale.
+
 
 ### Optional hook from Security CI
 
@@ -72,4 +78,4 @@ with:
 
 ## Interview one-liner
 
-*“LOWs are policy noise we auto-dismiss. AI only closes clear MEDIUM false positives. Real risk still fails the Security Gate until fixed.”*
+*“LOWs are policy. Bulk Auto@medium triages the backlog; Opus only signs off MEDIUM false-positive dismissals. The Security Gate still owns merge.”*

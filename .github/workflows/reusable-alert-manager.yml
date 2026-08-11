@@ -19,10 +19,15 @@ on:
         required: false
         default: false
       model:
-        description: OpenRouter model id (prefer openrouter/auto)
+        description: Tier-1 bulk model (prefer openrouter/auto)
         type: string
         required: false
         default: 'openrouter/auto'
+      fp-model:
+        description: Tier-2 FP gate model for dismiss decisions
+        type: string
+        required: false
+        default: 'anthropic/claude-opus-5'
       max-alerts:
         description: Max non-LOW alerts sent to the model (0 = all)
         type: string
@@ -39,10 +44,10 @@ on:
         required: false
         default: '8'
       cost-tier:
-        description: OpenRouter auto-router cost tier
+        description: OpenRouter auto-router cost tier for bulk
         type: string
         required: false
-        default: 'low'
+        default: 'medium'
       fp-confidence:
         description: Minimum confidence to dismiss as false positive
         type: string
@@ -83,6 +88,7 @@ jobs:
           repo-root: .
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           model: ${{ inputs.model }}
+          fp-model: ${{ inputs.fp-model }}
           dismiss-lows: ${{ inputs.dismiss-lows }}
           ai-review: ${{ inputs.ai-review }}
           open-fix-prs: ${{ inputs.open-fix-prs }}

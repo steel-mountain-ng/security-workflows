@@ -267,22 +267,46 @@ def _review_one_batch(
     *,
     model: str,
     api_key: str,
+    cost_tier: str | None,
+    purpose: str,
+    label_prefix: str,
 ) -> tuple[int, list[dict[str, Any]], str, bool, str]:
     """Worker: review one batch. Returns (idx, items, summary, fallback, routed_model)."""
     label = (
-        f"AI agent {idx}/{total}: "
+        f"{label_prefix} {idx}/{total}: "
         + ", ".join(f"#{f.get('alert_number')}:{f.get('rule_id')}" for f in batch[:6])
         + (" ..." if len(batch) > 6 else "")
     )
     print(label, flush=True)
     try:
-        triage, routed = call_openrouter(model, api_key, [slim_for_model(f) for f in batch])
+        triage, routed = call_openrouter(
+            model,
+            api_key,
+            [slim_for_model(f) for f in batch],
+            cost_tier=cost_tier,
+            purpose=purpose,
+        )
         items = _normalize_batch_items(batch, triage.get("findings") or [])
         summary = str(triage.get("summary") or f"Batch {idx} ok ({routed})")
-        print(f"AI agent {idx}/{total} done via {routed}", flush=True)
+        print(f"{label_prefix} {idx}/{total} done via {routed}", flush=True)
         return idx, items, summary, False, routed
     except Exception as exc:  # noqa: BLE001
-        print(f"::warning::OpenRouter agent {idx}/{total} failed: {exc}", flush=True)
+        print(f"::warning::{label_prefix} {idx}/{total} failed: {exc}", flush=True)
+        if purpose == "fp_gate":
+            # Do not invent FPs on gate failure — force needs_human
+            items = [
+                {
+                    "id": f["id"],
+                    "classification": "needs_human",
+                    "confidence": 0.3,
+                    "remediation": "FP gate failed; left for human review.",
+                    "auto_fix_eligible": False,
+                    "auto_fix_type": None,
+                    "dismiss_as_fp": False,
+                }
+                for f in batch
+            ]
+            return idx, items, f"FP gate batch {idx} failed.", True, "fp-gate-error"
         fallback = heuristic_review(batch)
         return idx, fallback.get("findings") or [], f"Batch {idx} heuristic fallback.", True, "heuristic"
 
@@ -294,6 +318,9 @@ def review_findings_batched(
     api_key: str,
     batch_size: int,
     concurrency: int,
+    cost_tier: str | None = None,
+    purpose: str = "bulk",
+    label_prefix: str = "AI bulk agent",
 ) -> dict[str, Any]:
     """Send findings to OpenRouter in parallel agent batches; merge classifications."""
     if not findings:
@@ -306,8 +333,8 @@ def review_findings_batched(
     batches = chunked(findings, batch_size)
     workers = max(1, min(concurrency, len(batches)))
     print(
-        f"AI multi-agent review: {len(findings)} alert(s), {len(batches)} batch(es) "
-        f"x up to {batch_size}, concurrency={workers}, model={model}"
+        f"{label_prefix}: {len(findings)} alert(s), {len(batches)} batch(es) "
+        f"x up to {batch_size}, concurrency={workers}, model={model}, purpose={purpose}"
     )
 
     results: dict[int, tuple[list[dict[str, Any]], str, bool, str]] = {}
@@ -320,6 +347,9 @@ def review_findings_batched(
                 batch,
                 model=model,
                 api_key=api_key,
+                cost_tier=cost_tier,
+                purpose=purpose,
+                label_prefix=label_prefix,
             ): idx
             for idx, batch in enumerate(batches, start=1)
         }
@@ -338,9 +368,9 @@ def review_findings_batched(
         routed_models.append(routed)
         any_fallback = any_fallback or fallback
 
-    unique_routes = sorted({m for m in routed_models if m and m != "heuristic"})
+    unique_routes = sorted({m for m in routed_models if m and m not in {"heuristic", "fp-gate-error"}})
     if unique_routes:
-        print(f"OpenRouter routed models: {', '.join(unique_routes)}")
+        print(f"{label_prefix} routed models: {', '.join(unique_routes)}")
 
     return {
         "summary": " | ".join(summaries)[:2000] or f"Reviewed {len(merged)} alert(s).",
@@ -350,18 +380,117 @@ def review_findings_batched(
     }
 
 
+def rescore_fp_candidates(
+    triage_items: list[dict[str, Any]],
+    findings_by_id: dict[str, dict[str, Any]],
+    *,
+    fp_model: str,
+    api_key: str,
+    batch_size: int,
+    concurrency: int,
+    repo_root: Path,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Second-tier Opus (or pinned) gate: overwrite bulk FP guesses with gate scores."""
+    candidate_ids: list[str] = []
+    for item in triage_items:
+        if item.get("dismiss_as_fp") or item.get("classification") == "likely_false_positive":
+            fid = item.get("id")
+            if fid:
+                candidate_ids.append(str(fid))
+
+    if not candidate_ids:
+        print("FP gate: no likely_false_positive candidates from bulk tier")
+        return triage_items, []
+
+    # Enrich with snippets for better FP judgment
+    gate_findings: list[dict[str, Any]] = []
+    for fid in candidate_ids:
+        base = findings_by_id.get(fid)
+        if not base:
+            continue
+        enriched = dict(base)
+        if not enriched.get("snippet"):
+            enriched["snippet"] = read_snippet(
+                repo_root,
+                str(enriched.get("path") or ""),
+                enriched.get("start_line"),
+                enriched.get("end_line"),
+            )
+        # Carry bulk opinion for the gate model
+        bulk = next((i for i in triage_items if i.get("id") == fid), {})
+        enriched["bulk_classification"] = bulk.get("classification")
+        enriched["bulk_confidence"] = bulk.get("confidence")
+        gate_findings.append(enriched)
+
+    print(f"FP gate: re-scoring {len(gate_findings)} candidate(s) with {fp_model}")
+    gate = review_findings_batched(
+        gate_findings,
+        model=fp_model,
+        api_key=api_key,
+        batch_size=max(min(batch_size, 15), 1),
+        concurrency=max(min(concurrency, 4), 1),
+        cost_tier=None,
+        purpose="fp_gate",
+        label_prefix="AI FP gate",
+    )
+    by_id = {i.get("id"): i for i in (gate.get("findings") or []) if i.get("id")}
+    merged: list[dict[str, Any]] = []
+    for item in triage_items:
+        fid = item.get("id")
+        if fid in by_id:
+            gated = dict(item)
+            g = by_id[fid]
+            for key in (
+                "classification",
+                "confidence",
+                "dismiss_as_fp",
+                "remediation",
+                "exploitability",
+                "reachability",
+                "business_impact",
+                "patch_sketch",
+                "auto_fix_eligible",
+                "auto_fix_type",
+            ):
+                if key in g:
+                    gated[key] = g[key]
+            gated["fp_gate_model"] = fp_model
+            gated["bulk_classification"] = item.get("classification")
+            gated["bulk_confidence"] = item.get("confidence")
+            merged.append(gated)
+        else:
+            merged.append(item)
+    return merged, gate.get("routed_models") or [fp_model]
+
+
 def call_openrouter(
-    model: str, api_key: str, findings: list[dict[str, Any]]
+    model: str,
+    api_key: str,
+    findings: list[dict[str, Any]],
+    *,
+    cost_tier: str | None = None,
+    purpose: str = "bulk",
 ) -> tuple[dict[str, Any], str]:
     """Call OpenRouter chat completions. Returns (triage_json, routed_model)."""
-    system = (
-        "You are a senior application security engineer managing a Code Scanning backlog. "
-        "Classify each alert. Prefer needs_human when unsure. "
-        "Only mark likely_false_positive when evidence strongly supports it. "
-        "Never recommend dismissing secrets or malware. "
-        "Never auto-dismiss CRITICAL/HIGH. "
-        "Return ONLY valid JSON."
-    )
+    if purpose == "fp_gate":
+        system = (
+            "You are a senior application security engineer acting as a FALSE-POSITIVE gate. "
+            "These alerts were flagged as possible false positives by a cheaper bulk model. "
+            "Re-score carefully. Prefer needs_human when unsure. "
+            "Only mark likely_false_positive when evidence strongly supports non-actionable noise. "
+            "Never recommend dismissing secrets, malware, or clearly exploitable app bugs. "
+            "Never approve auto-dismiss for CRITICAL/HIGH. "
+            "Return ONLY valid JSON."
+        )
+    else:
+        system = (
+            "You are a senior application security engineer managing a Code Scanning backlog. "
+            "Classify each alert. Prefer needs_human when unsure. "
+            "Only mark likely_false_positive when evidence strongly supports it. "
+            "Never recommend dismissing secrets or malware. "
+            "Never auto-dismiss CRITICAL/HIGH. "
+            "Return ONLY valid JSON."
+        )
     schema = {
         "summary": "string",
         "findings": [
@@ -407,8 +536,8 @@ def call_openrouter(
     # Prefer OpenRouter Auto Router when using openrouter/auto*
     if model.startswith("openrouter/auto"):
         plugin_id = "auto-beta-router" if "beta" in model else "auto-router"
-        cost_tier = env("AI_COST_TIER", "low") or "low"
-        body["plugins"] = [{"id": plugin_id, "cost_tier": cost_tier}]
+        tier = (cost_tier or env("AI_COST_TIER", "medium") or "medium").strip()
+        body["plugins"] = [{"id": plugin_id, "cost_tier": tier}]
 
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -492,6 +621,8 @@ def main() -> int:
     fp_confidence = float(env("AI_FP_CONFIDENCE", "0.85") or 0.85)
     fix_confidence = float(env("AI_FIX_CONFIDENCE", "0.7") or 0.7)
     model = env("AI_MODEL", "openrouter/auto") or "openrouter/auto"
+    cost_tier = env("AI_COST_TIER", "medium") or "medium"
+    fp_model = env("AI_FP_MODEL", "anthropic/claude-opus-5") or "anthropic/claude-opus-5"
     api_key = env("OPENROUTER_API_KEY")
     repo_root = Path(env("AI_REPO_ROOT", ".")).resolve()
 
@@ -562,24 +693,53 @@ def main() -> int:
         findings = [normalize_alert(a, repo_root, include_snippet=False) for a in others_sorted]
         findings_by_id = {f["id"]: f for f in findings}
 
+        # Tier 1: bulk classify (OpenRouter Auto @ medium by default)
         triage = review_findings_batched(
             findings,
             model=model,
             api_key=api_key,
             batch_size=max(batch_size, 1),
             concurrency=max(concurrency, 1),
+            cost_tier=cost_tier,
+            purpose="bulk",
+            label_prefix="AI bulk agent",
         )
 
-        eligible_pre = sum(1 for i in (triage.get("findings") or []) if i.get("auto_fix_eligible"))
-        fp_candidates = sum(
+        bulk_fp_candidates = sum(
             1
             for i in (triage.get("findings") or [])
             if i.get("dismiss_as_fp") or i.get("classification") == "likely_false_positive"
         )
         print(
-            f"Review findings={len(triage.get('findings') or [])} "
-            f"fp_candidates={fp_candidates} eligible_fixes={eligible_pre} "
-            f"fallback={bool(triage.get('fallback'))}"
+            f"Bulk findings={len(triage.get('findings') or [])} "
+            f"fp_candidates={bulk_fp_candidates} fallback={bool(triage.get('fallback'))}"
+        )
+
+        # Tier 2: Claude Opus FP gate — only gate may authorize dismiss
+        fp_routed: list[str] = []
+        if api_key and fp_model:
+            gated_items, fp_routed = rescore_fp_candidates(
+                triage.get("findings") or [],
+                findings_by_id,
+                fp_model=fp_model,
+                api_key=api_key,
+                batch_size=max(batch_size, 1),
+                concurrency=max(concurrency, 1),
+                repo_root=repo_root,
+            )
+            triage["findings"] = gated_items
+            triage["fp_gate_model"] = fp_model
+            triage["fp_gate_routed_models"] = fp_routed
+
+        eligible_pre = sum(1 for i in (triage.get("findings") or []) if i.get("auto_fix_eligible"))
+        fp_after_gate = sum(
+            1
+            for i in (triage.get("findings") or [])
+            if i.get("dismiss_as_fp") or i.get("classification") == "likely_false_positive"
+        )
+        print(
+            f"After FP gate: fp_candidates={fp_after_gate} eligible_fixes={eligible_pre} "
+            f"gate_model={fp_model}"
         )
 
         for item in triage.get("findings") or []:
@@ -589,11 +749,13 @@ def main() -> int:
                 {"rule": {"id": base.get("rule_id"), "description": base.get("title")}, "tool": {"name": base.get("source")}}
             )
 
-            # Enforce dismiss policy (MEDIUM + non-secret + high confidence only)
+            # Dismiss only after Opus/fp-gate confirmation (MEDIUM + non-secret + high conf)
+            gate_ok = (not fp_model) or bool(item.get("fp_gate_model"))
             want_fp = bool(item.get("dismiss_as_fp")) or item.get("classification") == "likely_false_positive"
             conf = float(item.get("confidence") or 0)
             can_dismiss_fp = (
-                want_fp
+                gate_ok
+                and want_fp
                 and conf >= fp_confidence
                 and sev == "MEDIUM"
                 and not secretish
@@ -605,14 +767,18 @@ def main() -> int:
                         dismiss_alert(
                             int(number),
                             "false positive",
-                            f"AI alert-manager: likely_false_positive (confidence={conf:.2f}). {item.get('remediation') or ''}",
+                            (
+                                f"AI alert-manager FP gate ({fp_model}): likely_false_positive "
+                                f"(confidence={conf:.2f}; bulk={item.get('bulk_classification')}/"
+                                f"{item.get('bulk_confidence')}). {item.get('remediation') or ''}"
+                            ),
                         )
                         dismissed_fps += 1
-                        print(f"Dismissed FP alert #{number}")
+                        print(f"Dismissed FP alert #{number} via {fp_model}")
                     except Exception as exc:  # noqa: BLE001
                         print(f"::warning::Failed to dismiss FP alert #{number}: {exc}")
 
-            # Enforce fix policy
+            # Enforce fix policy (bulk allowlist still applies; gate does not unlock secrets)
             if secretish or (base.get("source") or "") in NEVER_AUTO_FIX_SOURCES:
                 item["auto_fix_eligible"] = False
                 item["auto_fix_type"] = None
@@ -632,10 +798,16 @@ def main() -> int:
     write_output("dismissed-fps", str(dismissed_fps))
     write_output("fix-pr-urls", ",".join(fix_urls))
     reviewed = len(triage.get("findings") or [])
-    append_summary(f"- AI model: `{model}` (cost-tier={env('AI_COST_TIER', 'low') or 'low'}, concurrency={concurrency})")
+    append_summary(
+        f"- Tier 1 bulk: `{model}` (cost-tier={cost_tier}, concurrency={concurrency})"
+    )
     routed = triage.get("routed_models") or []
     if routed:
-        append_summary(f"- Auto-routed models: `{', '.join(routed)}`")
+        append_summary(f"- Bulk routed models: `{', '.join(routed)}`")
+    append_summary(f"- Tier 2 FP gate: `{fp_model}`")
+    fp_routed_summary = triage.get("fp_gate_routed_models") or []
+    if fp_routed_summary:
+        append_summary(f"- FP gate models: `{', '.join(fp_routed_summary)}`")
     append_summary(f"- AI-reviewed alerts: **{reviewed}**")
     append_summary(f"- AI false positives dismissed: **{dismissed_fps}**")
     append_summary(f"- Draft fix PRs: **{len(fix_urls)}**")

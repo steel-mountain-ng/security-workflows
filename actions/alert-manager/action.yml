@@ -12,9 +12,13 @@ inputs:
     required: false
     default: ''
   model:
-    description: OpenRouter model id (prefer openrouter/auto)
+    description: Tier-1 bulk OpenRouter model id (prefer openrouter/auto)
     required: false
     default: 'openrouter/auto'
+  fp-model:
+    description: Tier-2 FP gate model (used for false-positive dismiss decisions)
+    required: false
+    default: 'anthropic/claude-opus-5'
   dismiss-lows:
     description: Auto-dismiss all open LOW / note severity alerts
     required: false
@@ -40,9 +44,9 @@ inputs:
     required: false
     default: '8'
   cost-tier:
-    description: OpenRouter auto-router cost tier (low|medium|high|xhigh|max)
+    description: OpenRouter auto-router cost tier for bulk tier (low|medium|high|xhigh|max)
     required: false
-    default: 'low'
+    default: 'medium'
   fp-confidence:
     description: Minimum confidence to dismiss as false positive
     required: false
@@ -86,6 +90,7 @@ runs:
         PYTHONUNBUFFERED: '1'
         OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
         AI_MODEL: ${{ inputs.model }}
+        AI_FP_MODEL: ${{ inputs.fp-model }}
         DISMISS_LOWS: ${{ inputs.dismiss-lows }}
         AI_REVIEW: ${{ inputs.ai-review }}
         AI_OPEN_FIX_PRS: ${{ inputs.open-fix-prs }}
